@@ -48,7 +48,8 @@ public struct SocketRPC: Sendable {
                         "subscriptions": .array(kinds.map { .object(["type": .string($0)]) })
                     ])
                     try Self.writeLine(fd: fd, data: Self.encodeRequest(id: "events", method: "events.subscribe", params: subs))
-                    _ = try Self.readLine(fd: fd, timeoutSeconds: 15) // subscribe ack
+                    let ack = try Self.readLine(fd: fd, timeoutSeconds: 15) // subscribe ack
+                    _ = try Self.decodeResponse(ack)
                     var buffer = Data()
                     while !Task.isCancelled {
                         guard let line = try Self.readLine(fd: fd, timeoutSeconds: nil, buffer: &buffer) else { break }
@@ -167,10 +168,16 @@ public struct SocketRPC: Sendable {
         }
         var chunk = [UInt8](repeating: 0, count: 65536)
         while true {
-            if let timeoutSeconds {
-                var tv = timeval(tv_sec: Int(timeoutSeconds), tv_usec: 0)
-                _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-            }
+            // SO_RCVTIMEO belongs to the file descriptor, not to an individual
+            // read. The subscription acknowledgement has a finite timeout, but
+            // the event stream must block indefinitely afterward. Explicitly
+            // restore the zero (no timeout) value for that mode; otherwise an
+            // idle stream fails with EAGAIN every 15 seconds.
+            var tv = timeval(
+                tv_sec: timeoutSeconds.map { Int($0) } ?? 0,
+                tv_usec: 0
+            )
+            _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
             let count = read(fd, &chunk, chunk.count)
             if count == 0 { return buffer.isEmpty ? nil : buffer }
             if count < 0 {

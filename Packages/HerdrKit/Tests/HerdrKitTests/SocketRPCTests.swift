@@ -4,6 +4,45 @@ import XCTest
 @testable import HerdrKit
 
 final class SocketRPCTests: XCTestCase {
+    func testReadLineClearsARequestTimeoutForAnEventStream() throws {
+        var fds: [Int32] = [0, 0]
+        let result = fds.withUnsafeMutableBufferPointer { buffer in
+            socketpair(AF_UNIX, SOCK_STREAM, 0, buffer.baseAddress!)
+        }
+        XCTAssertEqual(result, 0, String(cString: strerror(errno)))
+        defer {
+            close(fds[0])
+            close(fds[1])
+        }
+
+        var first = Array("first\n".utf8)
+        XCTAssertEqual(write(fds[1], &first, first.count), first.count)
+        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: 1), Data("first".utf8))
+
+        var timeout = timeval()
+        var timeoutLength = socklen_t(MemoryLayout<timeval>.size)
+        XCTAssertEqual(
+            getsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, &timeoutLength),
+            0,
+            String(cString: strerror(errno))
+        )
+        XCTAssertEqual(timeout.tv_sec, 1)
+
+        var second = Array("second\n".utf8)
+        XCTAssertEqual(write(fds[1], &second, second.count), second.count)
+        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: nil), Data("second".utf8))
+
+        timeout = timeval()
+        timeoutLength = socklen_t(MemoryLayout<timeval>.size)
+        XCTAssertEqual(
+            getsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, &timeoutLength),
+            0,
+            String(cString: strerror(errno))
+        )
+        XCTAssertEqual(timeout.tv_sec, 0, "the event stream inherited the request timeout")
+        XCTAssertEqual(timeout.tv_usec, 0)
+    }
+
     func testConnectDisablesSIGPIPE() throws {
         // Names stay short because sockaddr_un caps paths at 104 bytes and
         // temporaryDirectory already burns most of that (/var/folders/…).

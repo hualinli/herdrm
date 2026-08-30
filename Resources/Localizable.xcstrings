@@ -26,6 +26,16 @@
     "%@" : {
 
     },
+    "%@ · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · %2$@"
+          }
+        }
+      }
+    },
     "%@ · SSH" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -350,6 +360,9 @@
         }
       }
     },
+    "Always use DERP" : {
+
+    },
     "Another client took this pane over, or the attach closed." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -383,6 +396,9 @@
           }
         }
       }
+    },
+    "AUTH KEY" : {
+
     },
     "Authentication cancelled — choose Reconnect to try again" : {
       "extractionState" : "stale",
@@ -737,6 +753,9 @@
         }
       }
     },
+    "CONNECT AS" : {
+
+    },
     "Connect to %@ over SSH" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -753,6 +772,9 @@
           }
         }
       }
+    },
+    "Connect to your tailnet without a system client" : {
+
     },
     "Connecting…" : {
       "extractionState" : "stale",
@@ -1108,6 +1130,12 @@
           }
         }
       }
+    },
+    "Enable it above, then connect with an auth key" : {
+
+    },
+    "Enable Tailscale" : {
+
     },
     "File Already Exists" : {
       "extractionState" : "stale",
@@ -1828,6 +1856,9 @@
         }
       }
     },
+    "No devices found. Check the Tailscale connection and refresh." : {
+
+    },
     "No folders match \"%@\"" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -2501,6 +2532,9 @@
         }
       }
     },
+    "Saved in the macOS login Keychain" : {
+
+    },
     "Saved in your macOS login Keychain" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -2806,6 +2840,9 @@
         }
       }
     },
+    "SSH" : {
+
+    },
     "SSH Authentication" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -2973,6 +3010,12 @@
           }
         }
       }
+    },
+    "Tailnet devices" : {
+
+    },
+    "Tailscale" : {
+
     },
     "Terminal" : {
       "extractionState" : "stale",
@@ -3260,6 +3303,9 @@
         }
       }
     },
+    "This is the Unix account used by Tailscale SSH on the selected device." : {
+
+    },
     "This Mac · herdr.sock" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3392,6 +3438,9 @@
           }
         }
       }
+    },
+    "Use the embedded network for Tailscale devices" : {
+
     },
     "user@host, a ~/.ssh/config alias, or user@host:port for a custom port." : {
       "localizations" : {

@@ -4,6 +4,32 @@ import XCTest
 @testable import HerdrKit
 
 final class SocketRPCTests: XCTestCase {
+    func testReadLineKeepsNDJSONRecordsFollowingTheFirstLine() throws {
+        var fds: [Int32] = [0, 0]
+        let result = fds.withUnsafeMutableBufferPointer { buffer in
+            socketpair(AF_UNIX, SOCK_STREAM, 0, buffer.baseAddress!)
+        }
+        XCTAssertEqual(result, 0, String(cString: strerror(errno)))
+        defer {
+            close(fds[0])
+            close(fds[1])
+        }
+
+        // This is what happens when the acknowledgement and an event arrive in
+        // one read(). The event bytes must survive consuming the acknowledgement.
+        var buffer = Data("ack\n{\"event\":\"pane.updated\"}\n".utf8)
+        XCTAssertEqual(
+            try SocketRPC.readLine(fd: fds[0], timeoutSeconds: 15, buffer: &buffer),
+            Data("ack".utf8)
+        )
+        XCTAssertEqual(buffer, Data("{\"event\":\"pane.updated\"}\n".utf8))
+        XCTAssertEqual(
+            try SocketRPC.readLine(fd: fds[0], timeoutSeconds: nil, buffer: &buffer),
+            Data("{\"event\":\"pane.updated\"}".utf8)
+        )
+        XCTAssertTrue(buffer.isEmpty)
+    }
+
     func testReadLineClearsARequestTimeoutForAnEventStream() throws {
         var fds: [Int32] = [0, 0]
         let result = fds.withUnsafeMutableBufferPointer { buffer in
@@ -17,7 +43,8 @@ final class SocketRPCTests: XCTestCase {
 
         var first = Array("first\n".utf8)
         XCTAssertEqual(write(fds[1], &first, first.count), first.count)
-        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: 1), Data("first".utf8))
+        var buffer = Data()
+        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: 1, buffer: &buffer), Data("first".utf8))
 
         var timeout = timeval()
         var timeoutLength = socklen_t(MemoryLayout<timeval>.size)
@@ -28,9 +55,9 @@ final class SocketRPCTests: XCTestCase {
         )
         XCTAssertEqual(timeout.tv_sec, 1)
 
-        var second = Array("second\n".utf8)
-        XCTAssertEqual(write(fds[1], &second, second.count), second.count)
-        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: nil), Data("second".utf8))
+        // Force the second readLine call to return from the existing buffer (no read()).
+        buffer = Data("second\n".utf8)
+        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: nil, buffer: &buffer), Data("second".utf8))
 
         timeout = timeval()
         timeoutLength = socklen_t(MemoryLayout<timeval>.size)

@@ -17,7 +17,8 @@ final class SocketRPCTests: XCTestCase {
 
         var first = Array("first\n".utf8)
         XCTAssertEqual(write(fds[1], &first, first.count), first.count)
-        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: 1), Data("first".utf8))
+        var buffer = Data()
+        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: 1, buffer: &buffer), Data("first".utf8))
 
         var timeout = timeval()
         var timeoutLength = socklen_t(MemoryLayout<timeval>.size)
@@ -28,9 +29,9 @@ final class SocketRPCTests: XCTestCase {
         )
         XCTAssertEqual(timeout.tv_sec, 1)
 
-        var second = Array("second\n".utf8)
-        XCTAssertEqual(write(fds[1], &second, second.count), second.count)
-        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: nil), Data("second".utf8))
+        // Force the second readLine call to return from the existing buffer (no read()).
+        buffer = Data("second\n".utf8)
+        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: nil, buffer: &buffer), Data("second".utf8))
 
         timeout = timeval()
         timeoutLength = socklen_t(MemoryLayout<timeval>.size)

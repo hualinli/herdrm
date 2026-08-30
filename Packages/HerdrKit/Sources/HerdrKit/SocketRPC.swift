@@ -161,6 +161,19 @@ public struct SocketRPC: Sendable {
     }
 
     static func readLine(fd: Int32, timeoutSeconds: Int32?, buffer: inout Data) throws -> Data? {
+        // SO_RCVTIMEO belongs to the file descriptor, not to an individual
+        // read, so it must be (re)applied on every call — including the
+        // buffer-only fast path below — or a timeout left by an earlier timed
+        // read would survive into a blocking (nil timeout) call. The event
+        // stream must block indefinitely, so a nil timeout restores the zero
+        // value; an idle stream failing with EAGAIN every 15s is a regression.
+        var tv = timeval(
+            tv_sec: timeoutSeconds.map { Int($0) } ?? 0,
+            tv_usec: 0
+        )
+        guard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
+            throw HerdrError.connectionFailed("setsockopt(SO_RCVTIMEO): \(String(cString: strerror(errno)))")
+        }
         if let index = buffer.firstIndex(of: 0x0A) {
             let line = buffer.prefix(upTo: index)
             buffer.removeSubrange(...index)
@@ -168,16 +181,6 @@ public struct SocketRPC: Sendable {
         }
         var chunk = [UInt8](repeating: 0, count: 65536)
         while true {
-            // SO_RCVTIMEO belongs to the file descriptor, not to an individual
-            // read. The subscription acknowledgement has a finite timeout, but
-            // the event stream must block indefinitely afterward. Explicitly
-            // restore the zero (no timeout) value for that mode; otherwise an
-            // idle stream fails with EAGAIN every 15 seconds.
-            var tv = timeval(
-                tv_sec: timeoutSeconds.map { Int($0) } ?? 0,
-                tv_usec: 0
-            )
-            _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
             let count = read(fd, &chunk, chunk.count)
             if count == 0 { return buffer.isEmpty ? nil : buffer }
             if count < 0 {

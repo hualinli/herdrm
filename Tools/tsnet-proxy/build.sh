@@ -1,6 +1,13 @@
 #!/bin/sh
 set -eu
 
+# Xcode invokes this as a post-build script; its environment has a minimal
+# PATH without Homebrew, so find `go` explicitly when the caller can't.
+if ! command -v go >/dev/null 2>&1 && [ -x /opt/homebrew/bin/go ]; then
+    PATH="/opt/homebrew/bin:$PATH"
+    export PATH
+fi
+
 # Xcode invokes this as a post-build script. Build a universal helper when the
 # Release configuration asks for both architectures; Debug normally provides a
 # single CURRENT/ARCHS value. CGO is disabled so Go can cross-compile the two

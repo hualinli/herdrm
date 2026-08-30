@@ -17,9 +17,6 @@ packages:
     url: https://github.com/migueldeicaza/SwiftTerm
     # 1.19 ships the marked-text overlay used for IME preedit; do not reimplement it.
     from: "1.19.0"
-  Sparkle:
-    url: https://github.com/sparkle-project/Sparkle
-    from: "2.9.6"
 targets:
   HerdrM:
     type: application
@@ -36,7 +33,6 @@ targets:
     dependencies:
       - package: HerdrKit
       - package: SwiftTerm
-      - package: Sparkle
     postBuildScripts:
       - name: Build embedded tsnet helper
         script: "${SRCROOT}/Tools/tsnet-proxy/build.sh"
@@ -58,9 +54,6 @@ targets:
         CFBundleLocalizations:
           - en
           - zh-Hans
-        SUFeedURL: https://github.com/missuo/herdrm/releases/latest/download/appcast.xml
-        SUPublicEDKey: RHEhllstUuuVrVDCPGrbhg/8LivSzpuZB9X3u3xdV5o=
-        SUEnableAutomaticChecks: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.bybee.herdrm
@@ -78,13 +71,13 @@ targets:
         LOCALIZATION_PREFERS_STRING_CATALOGS: YES
       configs:
         Debug:
-          # real identity so UserNotifications & friends work in dev builds
-          CODE_SIGN_IDENTITY: "Developer ID Application: MOE AI LLC (NCFNX3LJ83)"
+          # personal fork builds are ad-hoc signed; no Developer ID needed
+          CODE_SIGN_IDENTITY: "-"
           ONLY_ACTIVE_ARCH: YES
         Release:
-          CODE_SIGN_IDENTITY: "Developer ID Application: MOE AI LLC (NCFNX3LJ83)"
+          CODE_SIGN_IDENTITY: "-"
           ONLY_ACTIVE_ARCH: NO
-          ARCHS: "arm64 x86_64"
+          ARCHS: "arm64"
 
   HerdrMobile:
     type: application

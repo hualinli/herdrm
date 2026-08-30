@@ -1,7 +1,6 @@
 import AppKit
 import Darwin
 import HerdrKit
-import Sparkle
 import SwiftTerm
 import SwiftUI
 import UserNotifications
@@ -59,8 +58,6 @@ struct HerdrMApp: App {
     @FocusedValue(\.appModel) private var focusedModel
     @FocusedValue(\.splitAxis) private var focusedSplitAxis
 
-    private let updaterController: SPUStandardUpdaterController
-
     init() {
         if ProcessInfo.processInfo.environment[SSHCredentialStore.askPassModeEnvironmentKey] == "1" {
             Self.runSSHAskPass()
@@ -68,11 +65,6 @@ struct HerdrMApp: App {
         AppLanguage.synchronize()
         SSHCredentialStore.purgeAuthorizations()
         TerminalDefaults.registerBundledFonts()
-        updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
     }
 
     var body: some Scene {
@@ -98,12 +90,6 @@ struct HerdrMApp: App {
                 Button("New Space") { focusedModel?.showNewSpace = true }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                     .disabled(focusedModel == nil)
-            }
-
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") {
-                    updaterController.checkForUpdates(nil)
-                }
             }
 
             CommandMenu("Terminal") {

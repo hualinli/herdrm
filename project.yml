@@ -31,10 +31,17 @@ targets:
         excludes:
           - Localizable.xcstrings
       - path: Resources/Localizable.xcstrings
+      - path: Tools/tsnet-proxy/NOTICE
+        buildPhase: resources
     dependencies:
       - package: HerdrKit
       - package: SwiftTerm
       - package: Sparkle
+    postBuildScripts:
+      - name: Build embedded tsnet helper
+        script: "${SRCROOT}/Tools/tsnet-proxy/build.sh"
+        shell: /bin/sh
+        basedOnDependencyAnalysis: false
     info:
       path: Sources/HerdrM/Info.plist
       properties:

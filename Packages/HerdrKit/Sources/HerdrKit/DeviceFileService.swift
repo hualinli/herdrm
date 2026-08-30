@@ -77,16 +77,19 @@ public actor DeviceFileService {
 
     public let device: Device
     private let sshExecutableURL: URL
+    private let tailscale: TSNetManager?
     private var cachedRemoteHome: String?
 
-    public init(device: Device) {
+    public init(device: Device, tailscale: TSNetManager? = nil) {
         self.device = device
         self.sshExecutableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        self.tailscale = tailscale
     }
 
-    init(device: Device, sshExecutableURL: URL) {
+    init(device: Device, sshExecutableURL: URL, tailscale: TSNetManager? = nil) {
         self.device = device
         self.sshExecutableURL = sshExecutableURL
+        self.tailscale = tailscale
     }
 
     public func listDirectory(
@@ -98,7 +101,7 @@ public actor DeviceFileService {
         switch device.kind {
         case .local:
             entries = try Self.listLocalDirectory(at: path)
-        case .ssh:
+        case .ssh, .tailscale:
             let output = try await runSSHData(
                 command: Self.remoteListingCommand(path: path),
                 timeout: 30
@@ -139,7 +142,7 @@ public actor DeviceFileService {
                 progress: progress
             )
             return result.path
-        case .ssh:
+        case .ssh, .tailscale:
             let totalBytes = Int64(values.fileSize ?? 0)
             let temporary = destination + ".herdrm-\(UUID().uuidString.lowercased()).part"
             let installCommand = conflictPolicy == .replace
@@ -190,7 +193,7 @@ public actor DeviceFileService {
                 replace: conflictPolicy == .replace,
                 progress: progress
             )
-        case .ssh:
+        case .ssh, .tailscale:
             let totalOutput = try await runSSHData(
                 command: "wc -c < \(HerdrService.shellQuoted(source))",
                 timeout: 15
@@ -242,7 +245,7 @@ public actor DeviceFileService {
         switch device.kind {
         case .local:
             return NSHomeDirectory()
-        case .ssh:
+        case .ssh, .tailscale:
             if let cachedRemoteHome { return cachedRemoteHome }
             let output = try await runSSHData(command: "printf '%s' \"$HOME\"", timeout: 15)
             let home = String(decoding: output, as: UTF8.self)
@@ -284,7 +287,7 @@ public actor DeviceFileService {
         switch device.kind {
         case .local:
             return FileManager.default.fileExists(atPath: path)
-        case .ssh:
+        case .ssh, .tailscale:
             let command = """
             if [ -e \(HerdrService.shellQuoted(path)) ] || [ -L \(HerdrService.shellQuoted(path)) ]; then
                 printf 1
@@ -298,9 +301,10 @@ public actor DeviceFileService {
     }
 
     private func runSSHData(command: String, timeout: TimeInterval) async throws -> Data {
-        guard case .ssh(let target) = device.kind else {
-            throw HerdrError.fileOperationFailed("SSH is unavailable for a local device")
+        guard let target = device.sshTarget else {
+            throw HerdrError.fileOperationFailed("SSH is unavailable for this device")
         }
+        try await tailscale?.ensureRunning()
         let authentication = SSHTunnel.authenticationConfiguration(for: device.id)
         defer { authentication.discardAuthorization() }
         let arguments = authentication.arguments + [
@@ -308,6 +312,7 @@ public actor DeviceFileService {
             "-o", "ConnectTimeout=10",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
+        ] + SSHTunnel.proxyArguments(for: tailscale) + [
             SSHTunnel.sshDestination(target),
             command,
         ]
@@ -325,9 +330,10 @@ public actor DeviceFileService {
         totalBytes: Int64,
         progress: @escaping ProgressHandler
     ) async throws {
-        guard case .ssh(let target) = device.kind else {
-            throw HerdrError.fileTransferFailed("SSH is unavailable for a local device")
+        guard let target = device.sshTarget else {
+            throw HerdrError.fileTransferFailed("SSH is unavailable for this device")
         }
+        try await tailscale?.ensureRunning()
         let authentication = SSHTunnel.authenticationConfiguration(for: device.id)
         defer { authentication.discardAuthorization() }
         let arguments = authentication.arguments + [
@@ -335,6 +341,7 @@ public actor DeviceFileService {
             "-o", "ConnectTimeout=10",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
+        ] + SSHTunnel.proxyArguments(for: tailscale) + [
             SSHTunnel.sshDestination(target),
             "exec /bin/sh -c \(HerdrService.shellQuoted(command))",
         ]
@@ -354,9 +361,10 @@ public actor DeviceFileService {
         totalBytes: Int64,
         progress: @escaping ProgressHandler
     ) async throws {
-        guard case .ssh(let target) = device.kind else {
-            throw HerdrError.fileTransferFailed("SSH is unavailable for a local device")
+        guard let target = device.sshTarget else {
+            throw HerdrError.fileTransferFailed("SSH is unavailable for this device")
         }
+        try await tailscale?.ensureRunning()
         let authentication = SSHTunnel.authenticationConfiguration(for: device.id)
         defer { authentication.discardAuthorization() }
         let arguments = authentication.arguments + [
@@ -364,6 +372,7 @@ public actor DeviceFileService {
             "-o", "ConnectTimeout=10",
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=3",
+        ] + SSHTunnel.proxyArguments(for: tailscale) + [
             SSHTunnel.sshDestination(target),
             command,
         ]

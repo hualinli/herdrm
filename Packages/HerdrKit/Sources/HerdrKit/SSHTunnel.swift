@@ -1,4 +1,5 @@
 #if os(macOS)
+import Darwin
 import Foundation
 
 struct SSHAuthenticationConfiguration {
@@ -43,6 +44,7 @@ public actor SSHTunnel {
     public let target: String
     public private(set) var localSocketPath: String?
     private let credentialID: UUID?
+    private let tailscale: TSNetManager?
     private var process: Process?
     private var errorOutput: Pipe?
     private var errorBuffer: SSHErrorBuffer?
@@ -53,9 +55,14 @@ public actor SSHTunnel {
         "for d in \"$HOME\"/.nvm/versions/node/*/bin; do [ -d \"$d\" ] && PATH=\"$d:$PATH\"; done; "
         + "export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.grok/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\""
 
-    public init(target: String, credentialID: UUID? = nil) {
+    public init(
+        target: String,
+        credentialID: UUID? = nil,
+        tailscale: TSNetManager? = nil
+    ) {
         self.target = target
         self.credentialID = credentialID
+        self.tailscale = tailscale
     }
 
     deinit {
@@ -71,7 +78,8 @@ public actor SSHTunnel {
             target: target,
             command: "echo \"$HOME\"",
             timeout: 12,
-            credentialID: credentialID
+            credentialID: credentialID,
+            tailscale: tailscale
         )
         let home = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard home.hasPrefix("/") else {
@@ -97,6 +105,7 @@ public actor SSHTunnel {
         process = nil
         resetErrorCapture()
 
+        try await tailscale?.ensureRunning()
         let remoteSock = try await remoteSocketPath()
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("herdrm-tunnels", isDirectory: true)
@@ -109,7 +118,7 @@ public actor SSHTunnel {
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         let authentication = Self.authenticationConfiguration(for: credentialID)
         defer { authentication.discardAuthorization() }
-        proc.arguments = ["-N"] + authentication.arguments + [
+        proc.arguments = ["-N"] + authentication.arguments + Self.proxyArguments(for: tailscale) + [
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ConnectTimeout=10",
             "-o", "ExitOnForwardFailure=yes",
@@ -218,6 +227,139 @@ public actor SSHTunnel {
         return "ssh://\(target)"
     }
 
+    // MARK: - TCP latency
+
+    /// Measures the network RTT needed to establish a TCP connection to the
+    /// device's SSH endpoint. This deliberately stops at TCP connect: it does
+    /// not include SSH authentication, a remote command, or herdr RPC time.
+    /// `ssh -G` resolves user@host aliases and configured ports without making
+    /// a network connection, then a non-blocking BSD socket performs the actual
+    /// connect with a short timeout.
+    public static func tcpLatency(
+        target: String,
+        timeout: TimeInterval = 3
+    ) async -> Double? {
+        await Task.detached(priority: .utility) {
+            guard let endpoint = Self.resolveSSHEndpoint(target: target) else { return nil }
+            return Self.connectLatency(
+                host: endpoint.host,
+                port: endpoint.port,
+                timeout: timeout
+            )
+        }.value
+    }
+
+    private static func resolveSSHEndpoint(target: String) -> (host: String, port: UInt16)? {
+        let destination = sshDestination(target)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        process.arguments = ["-G", "-o", "BatchMode=yes", destination]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return fallbackSSHEndpoint(destination)
+        }
+        guard process.terminationStatus == 0 else {
+            return fallbackSSHEndpoint(destination)
+        }
+        var host: String?
+        var port: UInt16 = 22
+        for line in String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .split(whereSeparator: \.isNewline) ?? [] {
+            let fields = line.split(separator: " ", maxSplits: 1).map(String.init)
+            guard fields.count == 2 else { continue }
+            switch fields[0].lowercased() {
+            case "hostname": host = fields[1]
+            case "port": port = UInt16(fields[1]) ?? port
+            default: break
+            }
+        }
+        guard let host, !host.isEmpty, host != "none" else {
+            return fallbackSSHEndpoint(destination)
+        }
+        return (host, port)
+    }
+
+    private static func fallbackSSHEndpoint(_ destination: String) -> (host: String, port: UInt16)? {
+        let uri = destination.hasPrefix("ssh://") ? destination : "ssh://\(destination)"
+        guard let components = URLComponents(string: uri),
+              let host = components.host, !host.isEmpty,
+              !host.contains("/")
+        else { return nil }
+        return (host, UInt16(components.port ?? 22))
+    }
+
+    private static func connectLatency(
+        host: String,
+        port: UInt16,
+        timeout: TimeInterval
+    ) -> Double? {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        hints.ai_protocol = IPPROTO_TCP
+        var addresses: UnsafeMutablePointer<addrinfo>?
+        let service = String(port)
+        let result = host.withCString { hostPointer in
+            service.withCString { servicePointer in
+                getaddrinfo(hostPointer, servicePointer, &hints, &addresses)
+            }
+        }
+        guard result == 0, let first = addresses else { return nil }
+        defer { freeaddrinfo(first) }
+
+        let timeoutMilliseconds = Int32(max(1, min(timeout * 1_000, Double(Int32.max))))
+        var current: UnsafeMutablePointer<addrinfo>? = first
+        while let address = current {
+            let fd = socket(address.pointee.ai_family, address.pointee.ai_socktype, address.pointee.ai_protocol)
+            guard fd >= 0 else {
+                current = address.pointee.ai_next
+                continue
+            }
+            defer { close(fd) }
+            guard fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else {
+                current = address.pointee.ai_next
+                continue
+            }
+            let started = DispatchTime.now().uptimeNanoseconds
+            let connected = Darwin.connect(
+                fd,
+                address.pointee.ai_addr,
+                address.pointee.ai_addrlen
+            )
+            if connected == 0 {
+                return Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+            }
+            guard errno == EINPROGRESS else {
+                current = address.pointee.ai_next
+                continue
+            }
+            var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            guard poll(&descriptor, 1, timeoutMilliseconds) > 0 else {
+                current = address.pointee.ai_next
+                continue
+            }
+            var socketError: Int32 = 0
+            var socketErrorLength = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(
+                fd,
+                SOL_SOCKET,
+                SO_ERROR,
+                &socketError,
+                &socketErrorLength
+            ) == 0, socketError == 0 else {
+                current = address.pointee.ai_next
+                continue
+            }
+            return Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000
+        }
+        return nil
+    }
+
     // MARK: - Silent-forward diagnosis
 
     /// Explains a forward that answers with silence: ssh accepted the local connection,
@@ -235,7 +377,8 @@ public actor SSHTunnel {
                   target: target,
                   command: "test -S \"\(remoteSock)\" && echo exists || echo missing",
                   timeout: 10,
-                  credentialID: credentialID
+                  credentialID: credentialID,
+                  tailscale: tailscale
               )
         else { return nil }
         return Self.silentForwardDiagnosis(
@@ -265,7 +408,11 @@ public actor SSHTunnel {
     }
 
     /// Sniffs the remote OS: "macos", an os-release ID like "ubuntu"/"debian", or a uname fallback.
-    public static func probeOS(target: String, credentialID: UUID? = nil) async throws -> String {
+    public static func probeOS(
+        target: String,
+        credentialID: UUID? = nil,
+        tailscale: TSNetManager? = nil
+    ) async throws -> String {
         let command = """
         case "$(uname -s)" in Darwin) echo macos;; Linux) . /etc/os-release 2>/dev/null; echo "${ID:-linux}";; *) uname -s | tr '[:upper:]' '[:lower:]';; esac
         """
@@ -273,7 +420,8 @@ public actor SSHTunnel {
             target: target,
             command: command,
             timeout: 10,
-            credentialID: credentialID
+            credentialID: credentialID,
+            tailscale: tailscale
         )
         let os = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !os.isEmpty else { throw HerdrError.tunnelFailed("empty OS probe result") }
@@ -291,7 +439,8 @@ public actor SSHTunnel {
             localURL: localURL,
             remoteFilename: Self.uploadFilename(for: localURL),
             credentialID: credentialID,
-            timeout: Self.uploadTimeout(fileSizeBytes: fileSize)
+            timeout: Self.uploadTimeout(fileSizeBytes: fileSize),
+            tailscale: tailscale
         )
     }
 
@@ -326,13 +475,16 @@ public actor SSHTunnel {
         remoteFilename: String,
         credentialID: UUID?,
         timeout: TimeInterval = 60,
-        executableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh")
+        executableURL: URL = URL(fileURLWithPath: "/usr/bin/ssh"),
+        tailscale: TSNetManager? = nil
     ) async throws -> String {
         // The name lands inside a remote shell script, so nothing but the
         // generated form of uploadFilename(for:) may reach it.
         guard isSafeRemoteFilename(remoteFilename) else {
             throw HerdrError.fileTransferFailed("unsafe remote filename")
         }
+        try await tailscale?.ensureRunning()
+        let proxyArguments = Self.proxyArguments(for: tailscale)
         let command = """
         umask 077
         dir="${XDG_CACHE_HOME:-$HOME/.cache}/herdrm/attachments"
@@ -354,7 +506,7 @@ public actor SSHTunnel {
                 proc.executableURL = executableURL
                 let authentication = authenticationConfiguration(for: credentialID)
                 defer { authentication.discardAuthorization() }
-                proc.arguments = authentication.arguments + [
+                proc.arguments = authentication.arguments + proxyArguments + [
                     "-o", "StrictHostKeyChecking=accept-new",
                     "-o", "ConnectTimeout=8",
                     "-o", "ServerAliveInterval=15",
@@ -434,15 +586,18 @@ public actor SSHTunnel {
         target: String,
         command: String,
         timeout: TimeInterval,
-        credentialID: UUID? = nil
+        credentialID: UUID? = nil,
+        tailscale: TSNetManager? = nil
     ) async throws -> String {
-        try await withCheckedThrowingContinuation { continuation in
+        try await tailscale?.ensureRunning()
+        let proxyArguments = Self.proxyArguments(for: tailscale)
+        return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
                 let authentication = authenticationConfiguration(for: credentialID)
                 defer { authentication.discardAuthorization() }
-                proc.arguments = authentication.arguments + [
+                proc.arguments = authentication.arguments + proxyArguments + [
                     "-o", "StrictHostKeyChecking=accept-new",
                     "-o", "ConnectTimeout=8",
                     sshDestination(target),
@@ -475,6 +630,11 @@ public actor SSHTunnel {
                 continuation.resume(returning: String(data: data, encoding: .utf8) ?? "")
             }
         }
+    }
+
+    static func proxyArguments(for tailscale: TSNetManager?) -> [String] {
+        guard let tailscale else { return [] }
+        return ["-o", "ProxyCommand=\(tailscale.proxyCommand)"]
     }
 
     static func authenticationConfiguration(

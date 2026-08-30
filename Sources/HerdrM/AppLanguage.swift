@@ -54,6 +54,8 @@ extension Device {
             return String(localized: "This Mac · herdr.sock")
         case .ssh(let target):
             return String(localized: "\(target) · SSH")
+        case .tailscale(_, let hostname, _, let username):
+            return String(localized: "\(username)@\(hostname) · Tailscale")
         }
     }
 }

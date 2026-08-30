@@ -566,13 +566,14 @@ struct DevicePopover: View {
                 DevicePopoverRow(
                     device: device,
                     isActive: device.id == model.deviceFilter,
-                    connection: model.session(device.id).connection
+                    connection: model.session(device.id).connection,
+                    ping: device.isLocal ? nil : model.latencyDescription(for: device)
                 ) {
                     isPresented = false
                     model.setDeviceFilter(device.id)
                 }
                 .contextMenu {
-                    if !device.isLocal {
+                    if !device.isLocal && !device.isTailscale {
                         Button(String(localized: "Edit \(device.name)…")) {
                             isPresented = false
                             model.deviceToEdit = device
@@ -604,6 +605,9 @@ struct DevicePopover: View {
                 .strokeBorder(Theme.hairline, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
+        .onAppear {
+            if model.tailscaleEnabled { model.refreshTailscalePeers() }
+        }
     }
 
     private var connectedCount: Int {
@@ -637,6 +641,7 @@ struct DevicePopoverRow: View {
     let device: Device
     let isActive: Bool
     let connection: ConnectionState
+    let ping: String?
     let action: () -> Void
     @State private var hovered = false
 
@@ -670,6 +675,11 @@ struct DevicePopoverRow: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
+                if !device.isLocal {
+                    Text(ping ?? "—")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ping == nil ? Theme.textGhost : Theme.textSecondary)
+                }
                 if isActive {
                     Image(systemName: "checkmark")
                         .font(.system(size: 11, weight: .bold))

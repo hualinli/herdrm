@@ -13,13 +13,16 @@ Design canvas (waku-style sidebar, light/dark): `design/` — published as the
 - `Packages/HerdrKit` — SPM library (macOS + iOS): NDJSON-over-Unix-socket RPC
   (`SocketRPC`), models, `Device`/`DeviceStore` (persisted to
   `~/Library/Application Support/HerdrM/devices.json`). macOS-only files are
-  `#if os(macOS)`-gated: `SSHTunnel` (OpenSSH forward), `HerdrService` facade,
-  `ShellEnvironment`, `LocalServer`, `DeviceFileService`, `SSHCredentialStore`.
+  `#if os(macOS)`-gated: `SSHTunnel` (OpenSSH forward), `TSNetManager` (bundled
+  tsnet userspace node), `HerdrService` facade, `ShellEnvironment`, `LocalServer`,
+  `DeviceFileService`, `SSHCredentialStore`, `TailscaleCredentialStore`.
 - `Packages/HerdrSSH` — SPM library (iOS 18+): libssh2 + OpenSSL as prebuilt
   arm64 xcframeworks (`Artifacts/PROVENANCE.md`), ported from Heeler's
   HeelerSSH. `SSHConnection` does `direct-streamlocal` to the remote herdr
   socket (one channel per RPC), PTY exec channels for terminal attach.
 - `Sources/HerdrM` — macOS SwiftUI app (XcodeGen `project.yml`), SwiftTerm embed.
+- `Tools/tsnet-proxy` — Go helper compiled into the macOS app; it exposes a private
+  ProxyCommand pipe backed by Tailscale `tsnet` (direct, peer relay, or DERP).
 - `Sources/HerdrMobile` — iOS/iPadOS SwiftUI app (`HerdrMobile` target, iOS 18,
   iPhone + iPad). Devices are SSH hosts (Ed25519 device key in Keychain or
   password; TOFU host keys); RPC over `HerdrSSH`; terminal = display-first PTY

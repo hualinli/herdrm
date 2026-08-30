@@ -31,6 +31,8 @@ enum Theme {
     static let working = dynamic(hex(0x2563EB), hex(0x3B82F6))
     static let success = dynamic(hex(0x2FA35F), hex(0x62C987))
     static let warning = dynamic(hex(0xB8862E), hex(0xE0B36A))
+    static let latencyHigh = dynamic(hex(0xA36F2A), hex(0xC9964A))
+    static let latencySlow = dynamic(hex(0x8F542A), hex(0xB8753F))
     static let danger = dynamic(hex(0xC94F44), hex(0xE2726A))
 
     // surfaces

@@ -42,7 +42,7 @@ macOS window on top of it, and it's grown well past "attach to a terminal":
 
 | | |
 |---|---|
-| 🖥️ **Every device** | Local + remote over SSH — keys, Tailscale, or a Keychain password — with auto-reconnect |
+| 🖥️ **Every device** | Local + remote over SSH — keys, Tailscale SSH, or an embedded tsnet tailnet — with auto-reconnect |
 | 🧭 **Live status** | Spaces, Agents & Terminals across every connected device |
 | ⌨️ **Real terminal** | Full PTY attach, not a chat wrapper — native selection, legible fonts, resilient sessions |
 | 📎 **Paste anything** | Files and images land straight in the agent's pane, locally or over SSH |
@@ -135,6 +135,7 @@ herdrm is the same model, built for people who'd rather click:
 - [herdr](https://herdr.dev) installed locally (herdrm starts it if it isn't running) and on
   your remote machines
 - For remote devices: OpenSSH access, Tailscale SSH (1.98.0+), or a Keychain-stored password
+- For embedded Tailscale: add a reusable auth key in Settings → Tailscale; the bundled tsnet helper needs no host Tailscale installation
 
 ## 📦 Install
 
@@ -173,6 +174,11 @@ flowchart LR
   own (`make kit-test`).
 - **`Sources/HerdrM`** — the SwiftUI shell built on
   [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm).
+- **`Tools/tsnet-proxy`** — a bundled Go helper using Tailscale `tsnet`. OpenSSH
+  connects through its private ProxyCommand pipe, so LAN/direct UDP, current peer
+  relay, and DERP fallback all come from Tailscale's userspace stack. Settings →
+  Tailscale can optionally disable UDP and force DERP. Release builds compile a
+  universal helper as part of the Xcode build; source builds need Go 1.26+ installed.
 
 ## 🔨 Build from source
 

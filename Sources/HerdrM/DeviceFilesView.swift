@@ -20,11 +20,11 @@ private final class DeviceFileBrowserModel: ObservableObject {
         selectedPath.flatMap { path in entries.first { $0.path == path } }
     }
 
-    func configure(for device: Device) async {
+    func configure(for device: Device, tailscale: TSNetManager? = nil) async {
         guard self.device.id != device.id || entries.isEmpty else { return }
         generation += 1
         self.device = device
-        service = DeviceFileService(device: device)
+        service = DeviceFileService(device: device, tailscale: tailscale)
         currentPath = "~"
         pathText = "~"
         entries = []
@@ -114,6 +114,7 @@ private final class DeviceFileTransferModel: ObservableObject {
         localDirectory: String,
         targetDirectory: String,
         conflictPolicy: FileConflictPolicy,
+        tailscale: TSNetManager? = nil,
         onFinished: @escaping @MainActor () async -> Void
     ) {
         guard !isTransferring else { return }
@@ -129,7 +130,10 @@ private final class DeviceFileTransferModel: ObservableObject {
         }
         task = Task { [weak self] in
             do {
-                let service = DeviceFileService(device: targetDevice)
+                let service = DeviceFileService(
+                    device: targetDevice,
+                    tailscale: targetDevice.isTailscale ? tailscale : nil
+                )
                 switch direction {
                 case .upload:
                     _ = try await service.uploadFile(
@@ -187,9 +191,19 @@ struct DeviceFilesView: View {
             deviceBar
             Rectangle().fill(Theme.hairline).frame(height: 1)
             HStack(spacing: 0) {
-                DeviceFilePane(title: String(localized: "Local"), device: .local, browser: local)
+                DeviceFilePane(
+                    title: String(localized: "Local"),
+                    device: .local,
+                    tailscale: nil,
+                    browser: local
+                )
                 transferButtons
-                DeviceFilePane(title: targetDevice.name, device: targetDevice, browser: target)
+                DeviceFilePane(
+                    title: targetDevice.name,
+                    device: targetDevice,
+                    tailscale: targetDevice.isTailscale ? model.tailscaleManager : nil,
+                    browser: target
+                )
             }
             if transfer.isTransferring {
                 Rectangle().fill(Theme.hairline).frame(height: 1)
@@ -370,7 +384,8 @@ struct DeviceFilesView: View {
             targetDevice: targetDevice,
             localDirectory: local.currentPath,
             targetDirectory: target.currentPath,
-            conflictPolicy: policy
+            conflictPolicy: policy,
+            tailscale: targetDevice.isTailscale ? model.tailscaleManager : nil
         ) {
             switch pending.direction {
             case .upload:
@@ -391,6 +406,7 @@ private struct PendingFileTransfer: Identifiable {
 private struct DeviceFilePane: View {
     let title: String
     let device: Device
+    let tailscale: TSNetManager?
     @ObservedObject var browser: DeviceFileBrowserModel
 
     var body: some View {
@@ -407,7 +423,7 @@ private struct DeviceFilePane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.contentBackground)
         .task(id: device.id) {
-            await browser.configure(for: device)
+            await browser.configure(for: device, tailscale: tailscale)
         }
     }
 

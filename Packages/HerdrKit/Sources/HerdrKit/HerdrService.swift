@@ -5,6 +5,7 @@ import Foundation
 public actor HerdrService {
     public let device: Device
     private var tunnel: SSHTunnel?
+    private let tailscale: TSNetManager?
     private var rpc: SocketRPC?
     /// nil for remote devices and when auto-start is off; remotes are the user's to run.
     private let localServer: LocalHerdrServer?
@@ -14,18 +15,28 @@ public actor HerdrService {
 
     public static let minimumProtocolVersion = 17
 
-    public init(device: Device, autoStartLocalServer: Bool = true) {
+    public init(
+        device: Device,
+        autoStartLocalServer: Bool = true,
+        tailscale: TSNetManager? = nil
+    ) {
         self.init(
             device: device,
-            localServer: device.isLocal && autoStartLocalServer ? LocalHerdrServer() : nil
+            localServer: device.isLocal && autoStartLocalServer ? LocalHerdrServer() : nil,
+            tailscale: tailscale
         )
     }
 
     /// Seam for tests: injects the auto-start collaborator, nil turning it off.
-    init(device: Device, localServer: LocalHerdrServer?) {
+    init(device: Device, localServer: LocalHerdrServer?, tailscale: TSNetManager? = nil) {
         self.device = device
+        self.tailscale = tailscale
         if let target = device.sshTarget {
-            self.tunnel = SSHTunnel(target: target, credentialID: device.id)
+            self.tunnel = SSHTunnel(
+                target: target,
+                credentialID: device.id,
+                tailscale: tailscale
+            )
         }
         self.localServer = localServer
     }
@@ -38,7 +49,7 @@ public actor HerdrService {
         case .local:
             socketPath = device.socketPath
                 ?? (NSHomeDirectory() as NSString).appendingPathComponent(".config/herdr/herdr.sock")
-        case .ssh:
+        case .ssh, .tailscale:
             guard let tunnel else { throw HerdrError.tunnelFailed("missing tunnel") }
             socketPath = try await tunnel.ensureUp()
         }
@@ -233,7 +244,7 @@ public actor HerdrService {
         switch device.kind {
         case .local:
             return NSHomeDirectory()
-        case .ssh:
+        case .ssh, .tailscale:
             guard let tunnel else { throw HerdrError.tunnelFailed("missing tunnel") }
             return try await tunnel.probeRemoteHome()
         }
@@ -262,12 +273,16 @@ public actor HerdrService {
                 return manager.fileExists(atPath: "\(absolute)/\(name)", isDirectory: &isDirectory)
                     && isDirectory.boolValue
             }
-        case .ssh(let target):
+        case .ssh, .tailscale:
+            guard let target = device.sshTarget else {
+                throw HerdrError.tunnelFailed("missing SSH target")
+            }
             let output = try await SSHTunnel.runSSH(
                 target: target,
                 command: "cd \(Self.shellQuoted(absolute)) && LC_ALL=C ls -1p",
                 timeout: 15,
-                credentialID: device.id
+                credentialID: device.id,
+                tailscale: tailscale
             )
             names = output.split(separator: "\n").compactMap { line in
                 line.hasSuffix("/") ? String(line.dropLast()) : nil
@@ -538,7 +553,7 @@ public actor HerdrService {
         switch device.kind {
         case .local:
             return localURL.path
-        case .ssh:
+        case .ssh, .tailscale:
             guard let tunnel else {
                 throw HerdrError.fileTransferFailed("no SSH connection for this device")
             }
@@ -564,7 +579,15 @@ public actor HerdrService {
                 environment: [:],
                 authorizationID: nil
             )
-        case .ssh(let target):
+        case .ssh, .tailscale:
+            guard let target = device.sshTarget else {
+                return TerminalCommand(
+                    executable: "/usr/bin/false",
+                    args: [],
+                    environment: [:],
+                    authorizationID: nil
+                )
+            }
             let authentication = SSHTunnel.authenticationConfiguration(for: device.id)
             // Same seeding as the remote attach: SwiftTerm's child gets a sparse
             // environment, and OpenSSH needs the user's PATH (Match exec) and
@@ -578,7 +601,7 @@ public actor HerdrService {
             environment.removeValue(forKey: "LINES")
             return TerminalCommand(
                 executable: "/usr/bin/ssh",
-                args: ["-tt"] + authentication.arguments + [
+                args: ["-tt"] + authentication.arguments + SSHTunnel.proxyArguments(for: tailscale) + [
                     "-o", "StrictHostKeyChecking=accept-new",
                     "-o", "ConnectTimeout=10",
                     "-o", "ServerAliveInterval=15",
@@ -642,7 +665,15 @@ public actor HerdrService {
                 environment: environment,
                 authorizationID: nil
             )
-        case .ssh(let target):
+        case .ssh, .tailscale:
+            guard let target = device.sshTarget else {
+                return TerminalCommand(
+                    executable: "/usr/bin/false",
+                    args: [],
+                    environment: [:],
+                    authorizationID: nil
+                )
+            }
             // sshd exec is not a login shell — prepend the well-known prefixes
             // on the far side. Wrapped in sh explicitly: the ssh remote command
             // runs in the user's login shell, and the script's sh syntax must
@@ -660,7 +691,7 @@ public actor HerdrService {
             environment.removeValue(forKey: "LINES")
             return TerminalCommand(
                 executable: "/usr/bin/ssh",
-                args: ["-tt"] + authentication.arguments + [
+                args: ["-tt"] + authentication.arguments + SSHTunnel.proxyArguments(for: tailscale) + [
                     "-o", "StrictHostKeyChecking=accept-new",
                     "-o", "ConnectTimeout=10",
                     // Same keepalives as the tunnel: without them a dropped network

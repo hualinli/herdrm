@@ -251,12 +251,14 @@ struct SettingsView: View {
                 .tabItem { Label("Terminal", systemImage: "terminal") }
             AgentsSettingsView(model: model)
                 .tabItem { Label("Agents", systemImage: "sparkles") }
+            TailscaleSettingsView(model: model)
+                .tabItem { Label("Tailscale", systemImage: "network") }
             NotificationSettingsView()
                 .tabItem { Label("Notifications", systemImage: "bell") }
             AboutSettingsView()
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 420)
+        .frame(width: 500)
     }
 }
 
@@ -309,6 +311,329 @@ struct AgentsSettingsView: View {
             get: { drafts[kind] ?? "" },
             set: { drafts[kind] = $0 }
         )
+    }
+}
+
+struct TailscaleSettingsView: View {
+    @ObservedObject var model: AppModel
+    @State private var authKey = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                settingsHeader
+                connectionCard
+                devicesCard
+            }
+            .padding(20)
+        }
+        // Give this tab a sensible base height without locking the other
+        // Settings tabs to the same canvas. The list still grows/scrolls with
+        // the window when the user resizes it.
+        .frame(minHeight: 560)
+        .onAppear {
+            authKey = (try? TailscaleCredentialStore.authKey()) ?? ""
+            if model.tailscaleEnabled { model.refreshTailscalePeers() }
+        }
+    }
+
+    private var settingsHeader: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "network")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(width: 38, height: 38)
+                .background(Theme.accentWash, in: RoundedRectangle(cornerRadius: 11))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Tailscale")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Theme.text)
+                Text("Connect to your tailnet without a system client")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            Spacer()
+            stateBadge
+        }
+        .padding(.horizontal, 2)
+        .padding(.bottom, 2)
+    }
+
+    private var connectionCard: some View {
+        TailscaleSettingsCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Toggle(
+                        "Enable Tailscale",
+                        isOn: Binding(
+                            get: { model.tailscaleEnabled },
+                            set: { model.setTailscaleEnabled($0) }
+                        )
+                    )
+                    .labelsHidden()
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Enable Tailscale")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                        Text("Use the embedded network for Tailscale devices")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    Spacer()
+                }
+
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("AUTH KEY")
+                        .font(.system(size: 10, weight: .medium))
+                        .kerning(0.5)
+                        .foregroundStyle(Theme.textTertiary)
+                    HStack(spacing: 8) {
+                        Image(systemName: "key.horizontal")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Theme.textTertiary)
+                        SecureField("tskey-auth-xxxxx", text: $authKey)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                        if !authKey.isEmpty {
+                            Button {
+                                authKey = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(Theme.textGhost)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Clear auth key field")
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 34)
+                    .background(Theme.itemWash, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(Theme.hairline, lineWidth: 1)
+                    )
+
+                    HStack(spacing: 5) {
+                        Image(systemName: "lock.fill")
+                        Text("Saved in the macOS login Keychain")
+                    }
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Theme.textTertiary)
+                }
+
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button {
+                        model.clearTailscale()
+                        authKey = ""
+                    } label: {
+                        Label("Clear", systemImage: "xmark.circle")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+                    .tint(Theme.danger)
+
+                    Button {
+                        model.connectTailscale(authKey: authKey)
+                    } label: {
+                        Label("Connect", systemImage: "network")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .controlSize(.regular)
+                    .disabled(!model.tailscaleEnabled || !hasCredential)
+                }
+
+                if case .failed(let reason) = model.tailscaleState {
+                    Label(reason, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.danger)
+                        .lineLimit(2)
+                }
+
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+
+                HStack(spacing: 10) {
+                    Toggle(
+                        "Always use DERP",
+                        isOn: Binding(
+                            get: { model.tailscaleForceDERP },
+                            set: { model.setTailscaleForceDERP($0) }
+                        )
+                    )
+                    .labelsHidden()
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Always use DERP")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                        Text(model.tailscaleForceDERP
+                             ? "UDP disabled · DERP only"
+                             : "Direct, peer relay, or DERP fallback")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(Theme.textTertiary)
+                    }
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    private var devicesCard: some View {
+        TailscaleSettingsCard {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 7) {
+                            Text("Tailnet devices")
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .foregroundStyle(Theme.text)
+                            Text("\(model.tailscalePeers.count)")
+                                .font(.system(size: 10, weight: .medium).monospacedDigit())
+                                .foregroundStyle(Theme.textSecondary)
+                                .padding(.horizontal, 6)
+                                .frame(height: 18)
+                                .background(Theme.itemWash, in: Capsule())
+                        }
+                        if let status = model.tailscaleStatus {
+                            Text(statusSummary(status))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                    Spacer()
+                    Button {
+                        model.refreshTailscalePeers()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.textSecondary)
+                    .help("Refresh Tailscale devices")
+                    .disabled(!model.tailscaleEnabled)
+                }
+                .padding(.bottom, 10)
+
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+
+                if model.tailscalePeers.isEmpty {
+                    VStack(spacing: 7) {
+                        Image(systemName: model.tailscaleEnabled ? "network.slash" : "network")
+                            .font(.system(size: 20))
+                            .foregroundStyle(Theme.textGhost)
+                        Text(model.tailscaleEnabled ? "No devices found" : "Connect Tailscale to see devices")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Theme.textSecondary)
+                        if !model.tailscaleEnabled {
+                            Text("Enable it above, then connect with an auth key")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 25)
+                } else {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(model.tailscalePeers.enumerated()), id: \.element.id) { index, peer in
+                            tailscalePeerRow(peer)
+                            if index < model.tailscalePeers.count - 1 {
+                                Rectangle().fill(Theme.hairline).frame(height: 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var hasCredential: Bool {
+        !authKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || model.tailscaleStatus != nil
+    }
+
+    private var stateBadge: some View {
+        Text(stateLabel)
+            .font(.system(size: 10.5, weight: .medium))
+            .foregroundStyle(stateColor)
+            .padding(.horizontal, 9)
+            .frame(height: 22)
+            .background(stateColor.opacity(0.13), in: Capsule())
+    }
+
+    private var stateLabel: String {
+        switch model.tailscaleState {
+        case .disabled: return "Disabled"
+        case .idle: return "Not connected"
+        case .connecting: return "Connecting…"
+        case .connected: return "Connected"
+        case .failed: return "Connection failed"
+        }
+    }
+
+    private var stateColor: SwiftUI.Color {
+        switch model.tailscaleState {
+        case .disabled, .idle: return Theme.textTertiary
+        case .connecting: return Theme.warning
+        case .connected: return Theme.success
+        case .failed: return Theme.danger
+        }
+    }
+
+    private func statusSummary(_ status: TailscaleStatus) -> String {
+        let network = status.tailnet ?? "tailnet"
+        guard !status.tailscaleIPs.isEmpty else { return network }
+        return "\(network) · \(status.tailscaleIPs.joined(separator: ", "))"
+    }
+
+    private func tailscalePeerRow(_ peer: TailscalePeer) -> some View {
+        HStack(spacing: 9) {
+            Circle()
+                .fill(peer.online ? Theme.success : Theme.textGhost)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(peer.displayName)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    if let address = peer.preferredAddress {
+                        Text(address)
+                            .font(.system(size: 10.5, design: .monospaced))
+                    }
+                    Text("·")
+                    Text(peer.online ? peer.transportDescription : "Offline")
+                        .font(.system(size: 10.5))
+                }
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Text(peer.pingDescription ?? "—")
+                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                .foregroundStyle(peer.pingDescription == nil ? Theme.textGhost : Theme.textSecondary)
+                .frame(minWidth: 48, alignment: .trailing)
+        }
+        .padding(.vertical, 9)
+    }
+}
+
+private struct TailscaleSettingsCard<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .padding(14)
+            .background(Theme.terminalBackground, in: RoundedRectangle(cornerRadius: 11))
+            .overlay(
+                RoundedRectangle(cornerRadius: 11)
+                    .strokeBorder(Theme.hairline, lineWidth: 1)
+            )
     }
 }
 

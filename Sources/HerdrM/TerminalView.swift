@@ -721,6 +721,8 @@ private extension NSView {
 /// (locally or over SSH).
 struct AttachTerminalView: NSViewRepresentable {
     let device: Device
+    /// The app-owned userspace Tailscale node for tsnet devices.
+    var tailscale: TSNetManager? = nil
     let target: TerminalAttachTarget
     /// The device's herdr server version, so attach picks a matching CLI binary.
     var serverVersion: String?
@@ -759,7 +761,7 @@ struct AttachTerminalView: NSViewRepresentable {
         context.coordinator.onExit = onExit
         configureAppearance(view)
 
-        let service = HerdrService(device: device)
+        let service = HerdrService(device: device, tailscale: tailscale)
         view.attachmentService = service
         let command = service.attachCommand(target: target, serverVersion: serverVersion)
         var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
@@ -918,6 +920,7 @@ struct ShellTerminalView: NSViewRepresentable {
     /// Session identity for the registry; nil for the ⌘D split shell.
     var sessionID: UUID?
     var device: Device = .local
+    var tailscale: TSNetManager? = nil
     var fontName: String = ""
     var fontSize: Double = TerminalDefaults.defaultFontSize
     var thinStrokes: Bool = true
@@ -948,8 +951,11 @@ struct ShellTerminalView: NSViewRepresentable {
             mouseReporting: mouseReporting
         )
 
-        let command = HerdrService(device: device, autoStartLocalServer: false)
-            .terminalCommand()
+        let command = HerdrService(
+            device: device,
+            autoStartLocalServer: false,
+            tailscale: tailscale
+        ).terminalCommand()
         var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
         environment.append("LANG=en_US.UTF-8")
         for (key, value) in command.environment {

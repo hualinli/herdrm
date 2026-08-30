@@ -6,6 +6,10 @@ public struct Device: Codable, Sendable, Identifiable, Equatable, Hashable {
     public enum Kind: Codable, Sendable, Equatable, Hashable {
         case local
         case ssh(target: String)   // e.g. "vincent@10.10.10.87" or "vincent@mac-studio.tail"
+        /// A host reached through the embedded tsnet userspace network. The
+        /// Tailscale IP is stored separately from the display hostname so SSH
+        /// never depends on the Mac's system DNS configuration.
+        case tailscale(peerID: String, hostname: String, address: String, username: String)
     }
 
     public var id: UUID
@@ -37,7 +41,25 @@ public struct Device: Codable, Sendable, Identifiable, Equatable, Hashable {
     }
 
     public var sshTarget: String? {
-        if case .ssh(let target) = kind { return target }
+        switch kind {
+        case .ssh(let target): return target
+        case .tailscale(_, _, let address, let username):
+            guard !address.isEmpty, !username.isEmpty else { return nil }
+            let host = address.contains(":") && !address.hasPrefix("[")
+                ? "[\(address)]"
+                : address
+            return "\(username)@\(host)"
+        case .local: return nil
+        }
+    }
+
+    public var isTailscale: Bool {
+        if case .tailscale = kind { return true }
+        return false
+    }
+
+    public var tailscalePeerID: String? {
+        if case .tailscale(let peerID, _, _, _) = kind { return peerID }
         return nil
     }
 
@@ -45,6 +67,8 @@ public struct Device: Codable, Sendable, Identifiable, Equatable, Hashable {
         switch kind {
         case .local: return "This Mac · herdr.sock"
         case .ssh(let target): return "\(target) · SSH"
+        case .tailscale(_, let hostname, _, let username):
+            return "\(username)@\(hostname) · Tailscale"
         }
     }
 }

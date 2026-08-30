@@ -10,6 +10,14 @@ enum ConnectionState: Equatable {
     case failed(String)
 }
 
+enum TailscaleConnectionState: Equatable {
+    case disabled
+    case idle
+    case connecting
+    case connected
+    case failed(String)
+}
+
 /// Agent kinds offered by the picker. Local manifests are filtered through the
 /// login-shell search PATH; remote manifests stay server-owned.
 enum AgentCatalogState: Equatable {
@@ -46,6 +54,9 @@ struct DeviceSessionState {
     var workspaces: [WorkspaceInfo] = []
     var tabs: [TabInfo] = []
     var panes: [PaneInfo] = []
+    /// Last TCP connect latency for a regular SSH device. Tailscale devices
+    /// use the tsnet peer ping stored in `tailscalePeers` instead.
+    var latencyMilliseconds: Double?
     var agentCatalog: AgentCatalogState = .loading
     var attachmentCapabilities = AgentAttachmentCapabilityRegistry()
 }
@@ -114,6 +125,8 @@ final class AppModel: ObservableObject {
         }
     }
     private static let deviceFilterKey = "device.filter"
+    private static let tailscaleEnabledKey = "tailscale.enabled"
+    private static let tailscaleForceDERPKey = "tailscale.forceDERP"
     @Published var sessions: [UUID: DeviceSessionState] = [:]
     @Published var selectedSpace: SpaceRef?
     @Published var selectedPane: PaneRef? {
@@ -168,6 +181,16 @@ final class AppModel: ObservableObject {
     /// Transient action failures: shown as an alert, never by tearing down sessions.
     @Published var actionError: String?
 
+    // The helper is kept alive for the lifetime of the app. Its control socket
+    // is also the ProxyCommand endpoint used by every Tailscale device.
+    let tailscaleManager: TSNetManager
+    @Published var tailscaleEnabled: Bool
+    @Published var tailscaleForceDERP: Bool
+    @Published private(set) var tailscaleState: TailscaleConnectionState = .idle
+    @Published private(set) var tailscaleStatus: TailscaleStatus?
+    @Published private(set) var tailscalePeers: [TailscalePeer] = []
+    @Published var tailscaleError: String?
+
     /// A pending destructive close, confirmed via alert before running.
     struct CloseRequest {
         let title: String
@@ -181,8 +204,16 @@ final class AppModel: ObservableObject {
     private var sessionTasks: [UUID: Task<Void, Never>] = [:]
     private var refreshDebounces: [UUID: Task<Void, Never>] = [:]
     private var previousStatuses: [UUID: [String: AgentStatus]] = [:]
+    private var tailscaleConnectTask: Task<Void, Never>?
 
     init() {
+        let helperURL = Bundle.main.url(forResource: "tsnet-proxy", withExtension: nil)
+            ?? URL(fileURLWithPath: "/usr/local/libexec/herdrm/tsnet-proxy")
+        tailscaleManager = TSNetManager(helperURL: helperURL)
+        let savedTailscaleEnabled = UserDefaults.standard.bool(forKey: Self.tailscaleEnabledKey)
+        tailscaleEnabled = savedTailscaleEnabled
+        tailscaleForceDERP = UserDefaults.standard.bool(forKey: Self.tailscaleForceDERPKey)
+        tailscaleState = savedTailscaleEnabled ? .idle : .disabled
         let loaded = DeviceStore().load()
         devices = loaded
         // Restore the device filter only if that device still exists;
@@ -581,13 +612,16 @@ final class AppModel: ObservableObject {
 
     func start() {
         NotificationManager.shared.setup(model: self)
+        if tailscaleEnabled {
+            connectTailscale()
+        }
         // Finder-launched apps have launchd's PATH. Capture the login +
         // interactive shell environment on a background thread once; New Agent
         // lookup, herdr spawn, and terminal attach all read the same snapshot.
         Task.detached(priority: .utility) {
             _ = await ShellEnvironment.ensure()
         }
-        for device in devices {
+        for device in devices where !device.isTailscale {
             startSession(device)
             probeOSIfNeeded(device)
         }
@@ -595,9 +629,186 @@ final class AppModel: ObservableObject {
 
     func service(for device: Device) -> HerdrService {
         if let service = services[device.id] { return service }
-        let service = HerdrService(device: device)
+        let service = HerdrService(
+            device: device,
+            tailscale: device.isTailscale ? tailscaleManager : nil
+        )
         services[device.id] = service
         return service
+    }
+
+    /// Network latency in milliseconds for the device switcher and titlebar.
+    /// Tailscale values come from TSMP; regular SSH values come from a TCP
+    /// connect to the configured SSH endpoint. The two transports deliberately
+    /// never share a measurement.
+    func latencyMilliseconds(for device: Device) -> Double? {
+        if let peerID = device.tailscalePeerID {
+            return tailscalePeers.first(where: { $0.id == peerID })?.pingMilliseconds
+        }
+        return session(device.id).latencyMilliseconds
+    }
+
+    func latencyDescription(for device: Device) -> String? {
+        guard let milliseconds = latencyMilliseconds(for: device) else { return nil }
+        if milliseconds < 1 { return "<1 ms" }
+        return "\(Int(milliseconds.rounded())) ms"
+    }
+
+    // MARK: - Embedded Tailscale
+
+    func connectTailscale(authKey: String? = nil) {
+        guard tailscaleEnabled else { return }
+        let entered = authKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !entered.isEmpty {
+            do {
+                try TailscaleCredentialStore.setAuthKey(entered)
+            } catch {
+                tailscaleState = .failed(error.localizedDescription)
+                tailscaleError = error.localizedDescription
+                return
+            }
+        }
+        let storedKey = (try? TailscaleCredentialStore.authKey()) ?? nil
+        tailscaleState = .connecting
+        tailscaleStatus = nil
+        tailscalePeers = []
+        tailscaleError = nil
+        tailscaleConnectTask?.cancel()
+        tailscaleConnectTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let hasState = await tailscaleManager.hasSavedState()
+                if storedKey?.isEmpty != false && !hasState {
+                    throw HerdrError.tailscaleFailed("enter a Tailscale auth key before connecting")
+                }
+                let status = try await tailscaleManager.start(
+                    authKey: storedKey,
+                    forceDERP: tailscaleForceDERP
+                )
+                tailscaleStatus = status
+                tailscalePeers = status.peers
+                tailscaleState = .connected
+                guard !Task.isCancelled, tailscaleEnabled else {
+                    await tailscaleManager.stop()
+                    return
+                }
+                startTailscaleSessions()
+            } catch is CancellationError {
+                return
+            } catch {
+                tailscaleStatus = nil
+                tailscalePeers = []
+                tailscaleState = .failed(error.localizedDescription)
+                tailscaleError = error.localizedDescription
+            }
+        }
+    }
+
+    func setTailscaleEnabled(_ enabled: Bool) {
+        tailscaleEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.tailscaleEnabledKey)
+        if enabled {
+            connectTailscale()
+        } else {
+            tailscaleConnectTask?.cancel()
+            tailscaleState = .disabled
+            tailscaleStatus = nil
+            tailscalePeers = []
+            for device in devices where device.isTailscale { stopSession(device.id) }
+            Task { await tailscaleManager.stop() }
+        }
+    }
+
+    func setTailscaleForceDERP(_ force: Bool) {
+        tailscaleForceDERP = force
+        UserDefaults.standard.set(force, forKey: Self.tailscaleForceDERPKey)
+        // Tailscale reads this knob when the userspace node starts. Restarting
+        // here makes the switch take effect immediately while retaining the
+        // enrolled node identity.
+        if tailscaleEnabled { connectTailscale() }
+    }
+
+    func refreshTailscalePeers() {
+        guard tailscaleEnabled else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let status = try await tailscaleManager.status()
+                tailscaleStatus = status
+                tailscalePeers = status.peers
+                tailscaleState = .connected
+            } catch {
+                tailscaleState = .failed(error.localizedDescription)
+                tailscaleError = error.localizedDescription
+            }
+        }
+    }
+
+    func clearTailscale() {
+        tailscaleConnectTask?.cancel()
+        tailscaleEnabled = false
+        tailscaleForceDERP = false
+        UserDefaults.standard.set(false, forKey: Self.tailscaleEnabledKey)
+        UserDefaults.standard.set(false, forKey: Self.tailscaleForceDERPKey)
+        do {
+            try TailscaleCredentialStore.removeAuthKey()
+        } catch {
+            actionError = error.localizedDescription
+        }
+        let removedIDs = Set(devices.filter(\.isTailscale).map(\.id))
+        for device in devices where device.isTailscale { stopSession(device.id) }
+        devices.removeAll(where: \.isTailscale)
+        store.save(devices)
+        if let deviceFilter, removedIDs.contains(deviceFilter) { self.deviceFilter = nil }
+        if let selectedPane, removedIDs.contains(selectedPane.deviceID) { self.selectedPane = nil }
+        if let selectedSpace, removedIDs.contains(selectedSpace.deviceID) { self.selectedSpace = nil }
+        tailscaleState = .disabled
+        tailscaleStatus = nil
+        tailscalePeers = []
+        Task { await tailscaleManager.reset() }
+    }
+
+    private func startTailscaleSessions() {
+        for device in devices where device.isTailscale {
+            startSession(device)
+            probeOSIfNeeded(device)
+        }
+    }
+
+    func addTailscaleDevice(peer: TailscalePeer, username: String) {
+        guard let address = peer.preferredAddress else {
+            actionError = String(localized: "This Tailscale device has no reachable address.")
+            return
+        }
+        let user = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !user.isEmpty else { return }
+        let name = peer.displayName
+        let kind = Device.Kind.tailscale(
+            peerID: peer.id,
+            hostname: peer.dnsName.isEmpty ? peer.displayName : peer.dnsName,
+            address: address,
+            username: user
+        )
+        if let index = devices.firstIndex(where: { $0.tailscalePeerID == peer.id }) {
+            let old = devices[index]
+            stopSession(old.id)
+            devices[index] = Device(id: old.id, name: name, kind: kind, osID: peer.os.isEmpty ? nil : peer.os)
+            store.save(devices)
+            startSession(devices[index])
+            probeOSIfNeeded(devices[index])
+            setDeviceFilter(old.id)
+            return
+        }
+        let device = Device(
+            name: name,
+            kind: kind,
+            osID: peer.os.isEmpty ? nil : peer.os
+        )
+        devices.append(device)
+        store.save(devices)
+        startSession(device)
+        probeOSIfNeeded(device)
+        setDeviceFilter(device.id)
     }
 
     /// Runs one device's session: connect, snapshot, event stream, and reconnect
@@ -611,9 +822,14 @@ final class AppModel: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { return }
                 self.sessions[device.id]?.connection = .connecting
+                self.sessions[device.id]?.latencyMilliseconds = nil
                 do {
                     let pong = try await service.connect()
                     self.sessions[device.id]?.connection = .connected(version: pong.version)
+                    if !device.isTailscale, let target = device.sshTarget {
+                        self.sessions[device.id]?.latencyMilliseconds =
+                            await SSHTunnel.tcpLatency(target: target)
+                    }
                     backoff = 1
                     // retried on every successful connect until it sticks (a fresh
                     // device's first probes can fail before its host key is known)
@@ -684,9 +900,12 @@ final class AppModel: ObservableObject {
         services.removeAll()
         sessionTasks.values.forEach { $0.cancel() }
         sessionTasks.removeAll()
+        tailscaleConnectTask?.cancel()
+        tailscaleConnectTask = nil
         for service in live.values {
             await service.disconnect()
         }
+        await tailscaleManager.stop()
     }
 
     private func stopSession(_ id: UUID) {
@@ -881,7 +1100,8 @@ final class AppModel: ObservableObject {
         Task {
             guard let os = try? await SSHTunnel.probeOS(
                 target: target,
-                credentialID: device.id
+                credentialID: device.id,
+                tailscale: device.isTailscale ? tailscaleManager : nil
             ) else { return }
             if let index = self.devices.firstIndex(where: { $0.id == device.id }) {
                 self.devices[index].osID = os

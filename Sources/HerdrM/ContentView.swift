@@ -177,6 +177,7 @@ struct DetailView: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(Theme.textTertiary)
                 Spacer()
+                latencyPill(for: shell.device)
             } else if let attached = model.selectedAttachedEntry {
                 switch attached {
                 case .agent(let entry):
@@ -200,6 +201,7 @@ struct DetailView: View {
                     if model.showsRowDeviceBadges {
                         DeviceChip(device: entry.device)
                     }
+                    latencyPill(for: entry.device)
                     statusPill(agent.status)
                 case .terminal(let entry):
                     Image(systemName: "terminal")
@@ -219,6 +221,7 @@ struct DetailView: View {
                     if model.showsRowDeviceBadges {
                         DeviceChip(device: entry.device)
                     }
+                    latencyPill(for: entry.device)
                 }
             } else {
                 Text("No terminal selected")
@@ -268,6 +271,29 @@ struct DetailView: View {
         }
     }
 
+    @ViewBuilder
+    private func latencyPill(for device: Device) -> some View {
+        if !device.isLocal, let milliseconds = model.latencyMilliseconds(for: device),
+           let label = model.latencyDescription(for: device) {
+            Text(label)
+                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                .foregroundStyle(latencyColor(milliseconds))
+                .padding(.horizontal, 8)
+                .frame(height: 20)
+                .background(latencyColor(milliseconds).opacity(0.14), in: Capsule())
+                .help("Network latency: \(label)")
+        }
+    }
+
+    private func latencyColor(_ milliseconds: Double) -> SwiftUI.Color {
+        switch milliseconds {
+        case ..<60: return Theme.success
+        case ..<120: return Theme.warning
+        case ..<200: return Theme.latencyHigh
+        default: return Theme.latencySlow
+        }
+    }
+
     // MARK: - Terminal
 
     @AppStorage(TerminalDefaults.fontNameKey) private var terminalFontName = ""
@@ -296,6 +322,7 @@ struct DetailView: View {
                 ShellTerminalView(
                     sessionID: session.id,
                     device: session.device,
+                    tailscale: session.device.isTailscale ? model.tailscaleManager : nil,
                     fontName: terminalFontName,
                     fontSize: terminalFontSize,
                     thinStrokes: terminalThinStrokes,
@@ -333,6 +360,7 @@ struct DetailView: View {
                 ZStack {
                     AttachTerminalView(
                         device: entry.device,
+                        tailscale: entry.device.isTailscale ? model.tailscaleManager : nil,
                         target: entry.attachTarget,
                         serverVersion: model.serverVersion(deviceID: entry.device.id),
                         attachmentCapabilities: attachmentCapabilities,
@@ -517,31 +545,42 @@ struct DetailView: View {
 struct AddDeviceSheet: View {
     @ObservedObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @State private var tab = 0
     @State private var name = ""
     @State private var target = ""
+    @State private var selectedPeerID: String?
+    @State private var tailscaleUsername = NSUserName()
+
+    private var selectedPeer: TailscalePeer? {
+        selectedPeerID.flatMap { id in model.tailscalePeers.first { $0.id == id } }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SheetHeader(
-                systemImage: "desktopcomputer",
+                systemImage: tab == 0 ? "desktopcomputer" : "network",
                 title: String(localized: "Add Device"),
-                subtitle: String(localized: "Uses OpenSSH config, agent, Tailscale SSH, or password")
+                subtitle: tab == 0
+                    ? String(localized: "Uses OpenSSH config, agent, Tailscale SSH, or password")
+                    : String(localized: "Choose a device from the embedded Tailscale network")
             )
             Rectangle().fill(Theme.hairline).frame(height: 1)
 
-            VStack(alignment: .leading, spacing: 8) {
-                SheetSectionLabel("NAME")
-                TextField("mac-studio", text: $name)
-                    .textFieldStyle(.roundedBorder)
-                Spacer().frame(height: 8)
-                SheetSectionLabel("SSH TARGET")
-                TextField("vincent@10.10.10.87", text: $target)
-                    .textFieldStyle(.roundedBorder)
-                Text("user@host, a ~/.ssh/config alias, or user@host:port for a custom port.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Theme.textTertiary)
+            Picker("Device source", selection: $tab) {
+                Text("SSH").tag(0)
+                Text("Tailscale").tag(1)
             }
-            .padding(16)
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            Rectangle().fill(Theme.hairline).frame(height: 1)
+
+            if tab == 0 {
+                sshForm
+            } else {
+                tailscaleForm
+            }
 
             Rectangle().fill(Theme.hairline).frame(height: 1)
 
@@ -549,24 +588,148 @@ struct AddDeviceSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Add Device") {
-                    let trimmedName = name.trimmingCharacters(in: .whitespaces)
-                    let trimmedTarget = target.trimmingCharacters(in: .whitespaces)
-                    model.addDevice(
-                        name: trimmedName.isEmpty ? trimmedTarget : trimmedName,
-                        sshTarget: trimmedTarget
-                    )
-                    dismiss()
+                if tab == 0 {
+                    Button("Add Device") {
+                        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+                        let trimmedTarget = target.trimmingCharacters(in: .whitespaces)
+                        model.addDevice(
+                            name: trimmedName.isEmpty ? trimmedTarget : trimmedName,
+                            sshTarget: trimmedTarget
+                        )
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(target.trimmingCharacters(in: .whitespaces).isEmpty)
+                } else if let peer = selectedPeer {
+                    Button("Add Tailscale Device") {
+                        model.addTailscaleDevice(peer: peer, username: tailscaleUsername)
+                        dismiss()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(tailscaleUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Theme.accent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(target.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
         }
-        .frame(width: 400)
+        .frame(width: tab == 0 ? 420 : 620, height: tab == 0 ? 320 : 500)
+        .onAppear {
+            if model.tailscaleEnabled { model.refreshTailscalePeers() }
+        }
+        .onChange(of: tab) { _, newValue in
+            if newValue == 1, model.tailscaleEnabled { model.refreshTailscalePeers() }
+        }
+    }
+
+    private var sshForm: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SheetSectionLabel("NAME")
+            TextField("mac-studio", text: $name)
+                .textFieldStyle(.roundedBorder)
+            Spacer().frame(height: 8)
+            SheetSectionLabel("SSH TARGET")
+            TextField("vincent@10.10.10.87", text: $target)
+                .textFieldStyle(.roundedBorder)
+            Text("user@host, a ~/.ssh/config alias, or user@host:port for a custom port.")
+                .font(.system(size: 10.5))
+                .foregroundStyle(Theme.textTertiary)
+        }
+        .padding(16)
+    }
+
+    private var tailscaleForm: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !model.tailscaleEnabled {
+                Label("Enable Tailscale in Settings first.", systemImage: "info.circle")
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.vertical, 12)
+            } else if model.tailscalePeers.isEmpty {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("No devices found. Check the Tailscale connection and refresh.")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.textSecondary)
+                    Spacer()
+                    Button("Refresh") { model.refreshTailscalePeers() }
+                        .controlSize(.small)
+                }
+                .padding(.vertical, 12)
+            } else {
+                HStack {
+                    SheetSectionLabel("TAILNET DEVICES")
+                    Spacer()
+                    Button {
+                        model.refreshTailscalePeers()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Refresh Tailscale devices")
+                }
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(model.tailscalePeers) { peer in
+                            tailscalePeerRow(peer)
+                        }
+                    }
+                }
+                .frame(maxHeight: 290)
+
+                if let peer = selectedPeer {
+                    Rectangle().fill(Theme.hairline).frame(height: 1)
+                    Text("CONNECT AS")
+                        .font(.system(size: 10.5, weight: .medium))
+                        .kerning(0.4)
+                        .foregroundStyle(Theme.textTertiary)
+                    HStack {
+                        Text(peer.displayName)
+                            .font(.system(size: 12.5, weight: .medium))
+                        TextField("remote user", text: $tailscaleUsername)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Text("This is the Unix account used by Tailscale SSH on the selected device.")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Theme.textTertiary)
+                }
+            }
+        }
+        .padding(16)
+    }
+
+    private func tailscalePeerRow(_ peer: TailscalePeer) -> some View {
+        HStack(spacing: 9) {
+            Circle()
+                .fill(peer.online ? Theme.success : Theme.textGhost)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(peer.displayName)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineLimit(1)
+                Text("\(peer.transportDescription) · \(peer.preferredAddress ?? "no address")")
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Text(peer.pingDescription ?? "—")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(peer.pingDescription == nil ? Theme.textGhost : Theme.textSecondary)
+                .frame(minWidth: 48, alignment: .trailing)
+            Button("Connect") {
+                selectedPeerID = peer.id
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(selectedPeerID == peer.id ? Theme.itemWashSelected : .clear)
+        )
     }
 }
 

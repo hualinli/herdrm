@@ -48,9 +48,12 @@ public struct SocketRPC: Sendable {
                         "subscriptions": .array(kinds.map { .object(["type": .string($0)]) })
                     ])
                     try Self.writeLine(fd: fd, data: Self.encodeRequest(id: "events", method: "events.subscribe", params: subs))
-                    let ack = try Self.readLine(fd: fd, timeoutSeconds: 15) // subscribe ack
-                    _ = try Self.decodeResponse(ack)
+                    // A single read() can contain the acknowledgement and one or
+                    // more events. Keep the buffer used for the acknowledgement so
+                    // those already-received events are not discarded.
                     var buffer = Data()
+                    let ack = try Self.readLine(fd: fd, timeoutSeconds: 15, buffer: &buffer)
+                    _ = try Self.decodeResponse(ack)
                     while !Task.isCancelled {
                         guard let line = try Self.readLine(fd: fd, timeoutSeconds: nil, buffer: &buffer) else { break }
                         guard !line.isEmpty else { continue }

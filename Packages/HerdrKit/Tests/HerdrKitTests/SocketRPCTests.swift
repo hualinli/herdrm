@@ -4,6 +4,32 @@ import XCTest
 @testable import HerdrKit
 
 final class SocketRPCTests: XCTestCase {
+    func testReadLineKeepsNDJSONRecordsFollowingTheFirstLine() throws {
+        var fds: [Int32] = [0, 0]
+        let result = fds.withUnsafeMutableBufferPointer { buffer in
+            socketpair(AF_UNIX, SOCK_STREAM, 0, buffer.baseAddress!)
+        }
+        XCTAssertEqual(result, 0, String(cString: strerror(errno)))
+        defer {
+            close(fds[0])
+            close(fds[1])
+        }
+
+        // This is what happens when the acknowledgement and an event arrive in
+        // one read(). The event bytes must survive consuming the acknowledgement.
+        var buffer = Data("ack\n{\"event\":\"pane.updated\"}\n".utf8)
+        XCTAssertEqual(
+            try SocketRPC.readLine(fd: fds[0], timeoutSeconds: 15, buffer: &buffer),
+            Data("ack".utf8)
+        )
+        XCTAssertEqual(buffer, Data("{\"event\":\"pane.updated\"}\n".utf8))
+        XCTAssertEqual(
+            try SocketRPC.readLine(fd: fds[0], timeoutSeconds: nil, buffer: &buffer),
+            Data("{\"event\":\"pane.updated\"}".utf8)
+        )
+        XCTAssertTrue(buffer.isEmpty)
+    }
+
     func testReadLineClearsARequestTimeoutForAnEventStream() throws {
         var fds: [Int32] = [0, 0]
         let result = fds.withUnsafeMutableBufferPointer { buffer in

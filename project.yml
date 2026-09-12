@@ -13,10 +13,14 @@ packages:
     path: Packages/HerdrKit
   HerdrSSH:
     path: Packages/HerdrSSH
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm
-    # 1.19 ships the marked-text overlay used for IME preedit; do not reimplement it.
-    from: "1.19.0"
+  HerdrTailcat:
+    path: Packages/HerdrTailcat
+  GhosttyTerminal:
+    url: https://github.com/Lakr233/libghostty-spm
+    # Prebuilt libghostty xcframework — pin exactly and review the checksum diff
+    # on every bump (supply-chain discipline for a binary dependency). The
+    # version scheme is <major.minor>.<UTC yyyymmdd>, so `from:` would drift.
+    exactVersion: "1.6.20260909"
 targets:
   HerdrM:
     type: application
@@ -32,7 +36,10 @@ targets:
         buildPhase: resources
     dependencies:
       - package: HerdrKit
-      - package: SwiftTerm
+      - package: HerdrTailcat
+        product: HerdrTailcat
+      - package: GhosttyTerminal
+        product: GhosttyTerminal
     postBuildScripts:
       - name: Build embedded tsnet helper
         script: "${SRCROOT}/Tools/tsnet-proxy/build.sh"
@@ -88,7 +95,10 @@ targets:
     dependencies:
       - package: HerdrKit
       - package: HerdrSSH
-      - package: SwiftTerm
+      - package: HerdrTailcat
+        product: HerdrTailcat
+      - package: GhosttyTerminal
+        product: GhosttyTerminal
     info:
       path: Sources/HerdrMobile/Info.plist
       properties:
@@ -127,3 +137,35 @@ targets:
         ARCHS: arm64
         ONLY_ACTIVE_ARCH: NO
         EXCLUDED_ARCHS__sdk_iphonesimulator__: x86_64
+
+schemes:
+  HerdrM:
+    build:
+      targets:
+        HerdrM: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: []
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  HerdrMobile:
+    build:
+      targets:
+        HerdrMobile: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: []
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

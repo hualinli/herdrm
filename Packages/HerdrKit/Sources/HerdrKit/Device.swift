@@ -1,7 +1,9 @@
 import Foundation
 
 /// A machine running herdr. `local` talks straight to the Unix socket;
-/// `ssh` reaches the remote socket through an OpenSSH stream-local forward.
+/// `ssh` reaches the remote socket through an OpenSSH stream-local forward;
+/// `tailcat` reaches a socket exposed by the herdr.tailcat server plugin
+/// through a WireGuard/DERP tunnel (token in the Keychain, keyed by id).
 public struct Device: Codable, Sendable, Identifiable, Equatable, Hashable {
     public enum Kind: Codable, Sendable, Equatable, Hashable {
         case local
@@ -10,6 +12,8 @@ public struct Device: Codable, Sendable, Identifiable, Equatable, Hashable {
         /// Tailscale IP is stored separately from the display hostname so SSH
         /// never depends on the Mac's system DNS configuration.
         case tailscale(peerID: String, hostname: String, address: String, username: String)
+
+        case tailcat
     }
 
     public var id: UUID
@@ -49,7 +53,7 @@ public struct Device: Codable, Sendable, Identifiable, Equatable, Hashable {
                 ? "[\(address)]"
                 : address
             return "\(username)@\(host)"
-        case .local: return nil
+        case .local, .tailcat: return nil
         }
     }
 
@@ -63,12 +67,19 @@ public struct Device: Codable, Sendable, Identifiable, Equatable, Hashable {
         return nil
     }
 
+    public var isTailcat: Bool {
+        if case .tailcat = kind { return true }
+        return false
+    }
+
     public var subtitle: String {
         switch kind {
         case .local: return "This Mac · herdr.sock"
         case .ssh(let target): return "\(target) · SSH"
         case .tailscale(_, let hostname, _, let username):
             return "\(username)@\(hostname) · Tailscale"
+
+        case .tailcat: return "tailcat tunnel"
         }
     }
 }

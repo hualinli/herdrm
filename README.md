@@ -34,6 +34,16 @@
   <img src=".github/assets/screenshot.png" alt="herdrm — device switcher and a live claude terminal" />
 </p>
 
+## Personal fork
+
+This fork keeps embedded Tailscale (`tsnet`) alongside upstream Tailcat and
+libghostty. Agent status follows pane-scoped events (PR #79) with periodic
+snapshot recovery. Personal builds use ad-hoc signing and do not include Sparkle
+self-updates; Release targets Apple Silicon. `make build` builds the Mac app,
+`make kit-test` checks the shared layer, and
+`python3 Tests/run-status-refresh-tests.py` checks refresh scheduling without
+launching the app.
+
 ## ✨ What it does
 
 [herdr](https://herdr.dev) is the runtime your coding agents live on — a background server that
@@ -202,12 +212,22 @@ Early-stage software, PRs genuinely welcome — small and single-purpose lands f
 ## 🙏 Credits
 
 - [herdr](https://herdr.dev) — the agent runtime this app is a console for.
+- [@lbr77](https://github.com/lbr77) — the [herdr.tailcat](https://github.com/lbr77/herdr-plugin-tailcat)
+  server plugin, the embedded tailcat bridge, and the reference implementation
+  the libghostty terminal migration is built on ([lbr77/herdrm](https://github.com/lbr77/herdrm)).
 - [Heeler](https://github.com/ZingerLittleBee/Heeler) — iOS herdr client; domain model and
   transport patterns.
 - [waku](https://github.com/egoist/waku) — sidebar design reference.
-- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) — terminal emulation.
+- [libghostty-spm](https://github.com/Lakr233/libghostty-spm) — the Ghostty terminal engine
+  (Metal), by [@Lakr233](https://github.com/Lakr233).
 - [Sparkle](https://sparkle-project.org) — auto-updates.
 - [Lobe Icons](https://github.com/lobehub/lobe-icons) / [Simple Icons](https://simpleicons.org) — brand icons.
+
+## 📄 License
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md) — free to use, modify, and share for
+any **noncommercial** purpose. Commercial use requires a separate license from
+the maintainer. Contributions are accepted under the same terms.
 
 ## <a name="-status"></a>⚠️ Status
 

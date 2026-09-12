@@ -1,7 +1,6 @@
 import AppKit
 import Darwin
 import HerdrKit
-import SwiftTerm
 import SwiftUI
 import UserNotifications
 
@@ -263,6 +262,7 @@ struct AgentsSettingsView: View {
         ("kimi", "Kimi", "kimi"),
         ("opencode", "OpenCode", "opencode"),
         ("pi", "Pi", "pi"),
+        ("omp", "Oh My Pi", "omp"),
         ("copilot", "Copilot", "copilot"),
     ]
 
@@ -411,6 +411,12 @@ struct TailscaleSettingsView: View {
 
                 HStack(spacing: 8) {
                     Spacer()
+                    Link(destination: URL(string: "https://login.tailscale.com/admin/settings/keys")!) {
+                        Label("Generate auth key", systemImage: "arrow.up.forward.app")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundStyle(Theme.accent)
+                    .help("Open Tailscale admin to generate a reusable auth key")
                     Button {
                         model.clearTailscale()
                         authKey = ""

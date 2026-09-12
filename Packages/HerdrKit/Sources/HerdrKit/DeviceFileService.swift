@@ -99,6 +99,10 @@ public actor DeviceFileService {
         let path = try await absolutePath(requestedPath)
         let entries: [DeviceFileEntry]
         switch device.kind {
+        case .tailcat:
+            throw HerdrError.fileOperationFailed(
+                "the Files workspace is not supported over a tailcat tunnel"
+            )
         case .local:
             entries = try Self.listLocalDirectory(at: path)
         case .ssh, .tailscale:
@@ -134,6 +138,10 @@ public actor DeviceFileService {
         )
 
         switch device.kind {
+        case .tailcat:
+            throw HerdrError.fileOperationFailed(
+                "the Files workspace is not supported over a tailcat tunnel"
+            )
         case .local:
             let result = try await Self.copyLocalFile(
                 from: localURL,
@@ -186,6 +194,10 @@ public actor DeviceFileService {
         )
 
         switch device.kind {
+        case .tailcat:
+            throw HerdrError.fileOperationFailed(
+                "the Files workspace is not supported over a tailcat tunnel"
+            )
         case .local:
             return try await Self.copyLocalFile(
                 from: URL(fileURLWithPath: source),
@@ -243,6 +255,10 @@ public actor DeviceFileService {
 
     private func homeDirectory() async throws -> String {
         switch device.kind {
+        case .tailcat:
+            throw HerdrError.fileOperationFailed(
+                "the Files workspace is not supported over a tailcat tunnel"
+            )
         case .local:
             return NSHomeDirectory()
         case .ssh, .tailscale:
@@ -285,6 +301,10 @@ public actor DeviceFileService {
 
     private func pathExists(_ path: String) async throws -> Bool {
         switch device.kind {
+        case .tailcat:
+            throw HerdrError.fileOperationFailed(
+                "the Files workspace is not supported over a tailcat tunnel"
+            )
         case .local:
             return FileManager.default.fileExists(atPath: path)
         case .ssh, .tailscale:

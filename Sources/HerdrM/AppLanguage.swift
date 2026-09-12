@@ -56,6 +56,9 @@ extension Device {
             return String(localized: "\(target) · SSH")
         case .tailscale(_, let hostname, _, let username):
             return String(localized: "\(username)@\(hostname) · Tailscale")
+
+        case .tailcat:
+            return String(localized: "tailcat tunnel")
         }
     }
 }

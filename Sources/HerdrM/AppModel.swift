@@ -1,6 +1,5 @@
 import Foundation
 import HerdrKit
-import SwiftTerm
 import SwiftUI
 
 enum ConnectionState: Equatable {
@@ -136,7 +135,24 @@ final class AppModel: ObservableObject {
             if let old = oldValue, old != selectedPane {
                 unreadAgents.remove(AgentUnreadKey(deviceID: old.deviceID, paneID: old.paneID))
             }
+            noteSelectedAttachSession()
         }
+    }
+
+    /// Kept-alive attaches: every agent/terminal the user has opened stays
+    /// mounted (hidden) so switching back preserves its scrollback and running
+    /// state instead of re-attaching. Evicted when its pane closes.
+    @Published var attachSessions: [AttachedEntry] = []
+
+    /// Keeps the selected pane's attach alive so switching back preserves its content.
+    /// Runs synchronously inside the `selectedPane` assignment, so the kept-alive entry
+    /// is in `attachSessions` in the same update the selection lands in — a separate
+    /// onAppear/onChange would leave a one-frame window with no view for the new pane.
+    private func noteSelectedAttachSession() {
+        guard let entry = selectedAttachedEntry,
+              !attachSessions.contains(where: { $0.id == entry.id })
+        else { return }
+        attachSessions.append(entry)
     }
     /// Finished agents the user has not opened since they flipped to `done`.
     @Published private(set) var unreadAgents: Set<AgentUnreadKey> = []
@@ -165,9 +181,13 @@ final class AppModel: ObservableObject {
     }
     static let splitRatioKey = "terminal.splitRatio"
     /// Live terminal views of the ⌘D split, used by menu commands to move focus.
-    /// Held weakly so the views are not kept alive by the model.
-    weak var splitAgentView: LocalProcessTerminalView?
-    weak var splitShellView: LocalProcessTerminalView?
+    /// The agent side is resolved from the attach registry by the current selection
+    /// (kept-alive attach views persist across switches, so a stored ref would go
+    /// stale); the shell side stays a weak ref since the split shell is a single view.
+    var splitAgentView: LineBreakTerminalView? {
+        selectedAttachedEntry.flatMap { AttachViewRegistry.view(for: $0.id) }
+    }
+    weak var splitShellView: LineBreakTerminalView?
     /// Standalone terminals. Their views stay alive while deselected —
     /// unlike agents, a local shell has no server side to reattach to.
     @Published var shellSessions: [ShellSession] = []
@@ -178,6 +198,7 @@ final class AppModel: ObservableObject {
     @Published var sshAuthenticationRequest: SSHAuthenticationRequest?
     @Published var spaceToRename: SpaceEntry?
     @Published var agentToRename: AgentEntry?
+    @Published var terminalToRename: TerminalEntry?
     /// Transient action failures: shown as an alert, never by tearing down sessions.
     @Published var actionError: String?
 
@@ -304,14 +325,16 @@ final class AppModel: ObservableObject {
 
         var id: String { "\(device.id.uuidString)-\(pane.paneID)" }
         var ref: PaneRef { PaneRef(deviceID: device.id, paneID: pane.paneID) }
+        var tabID: String? { pane.tabID ?? tab?.tabID }
 
         var title: String {
+            // User tab labels must win or `tab.rename` is invisible behind OSC.
+            if let label = tab?.customLabel {
+                return label
+            }
             if let terminalTitle = pane.terminalTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
                !terminalTitle.isEmpty {
                 return terminalTitle
-            }
-            if let label = tab?.customLabel {
-                return label
             }
             if let cwd = pane.cwd, !cwd.isEmpty {
                 let basename = URL(fileURLWithPath: cwd).lastPathComponent
@@ -376,7 +399,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Agents across the scope, filtered by selected space, in herdr tab order
-    /// (device → workspace → tab number) so sidebar drag matches the TUI.
+    /// (device → workspace → snapshot array) so sidebar drag matches the TUI.
     var visibleAgents: [AgentEntry] {
         var entries = devicesInScope.flatMap { device in
             session(device.id).agents.map { agentEntry(device: device, agent: $0) }
@@ -420,7 +443,17 @@ final class AppModel: ObservableObject {
                 $0.device.id == space.deviceID && $0.pane.workspaceID == space.workspaceID
             }
         }
-        return entries
+        let deviceRank = Dictionary(uniqueKeysWithValues: devicesInScope.enumerated().map { ($1.id, $0) })
+        return entries.sorted { lhs, rhs in
+            let d0 = deviceRank[lhs.device.id] ?? Int.max
+            let d1 = deviceRank[rhs.device.id] ?? Int.max
+            if d0 != d1 { return d0 < d1 }
+            let w0 = workspaceRank(deviceID: lhs.device.id, workspaceID: lhs.pane.workspaceID)
+            let w1 = workspaceRank(deviceID: rhs.device.id, workspaceID: rhs.pane.workspaceID)
+            if w0 != w1 { return w0 < w1 }
+            return tabRank(deviceID: lhs.device.id, tabID: lhs.tabID)
+                < tabRank(deviceID: rhs.device.id, tabID: rhs.tabID)
+        }
     }
 
     func isUnread(_ entry: AgentEntry) -> Bool {
@@ -458,8 +491,9 @@ final class AppModel: ObservableObject {
         session(deviceID).workspaces.firstIndex { $0.workspaceID == workspaceID } ?? Int.max
     }
 
-    private func tabRank(deviceID: UUID, tabID: String) -> Int {
-        session(deviceID).tabs.firstIndex { $0.tabID == tabID } ?? Int.max
+    private func tabRank(deviceID: UUID, tabID: String?) -> Int {
+        guard let tabID else { return Int.max }
+        return session(deviceID).tabs.firstIndex { $0.tabID == tabID } ?? Int.max
     }
 
     private func orderedTabIDs(deviceID: UUID, workspaceID: String) -> [String] {
@@ -902,6 +936,15 @@ final class AppModel: ObservableObject {
                 } catch {
                     guard !Task.isCancelled, self.sessionTokens[device.id] == sessionToken else { return }
                     self.sessions[device.id]?.connection = .failed(error.localizedDescription)
+                    // The catalog's initial state is .loading; when connect()
+                    // itself fails the load never runs, and without this the
+                    // New Agent panel spins on "Checking agents…" forever
+                    // while the only hint is the footer indicator (#69).
+                    if case .loading = self.sessions[device.id]?.agentCatalog ?? .loading {
+                        self.sessions[device.id]?.agentCatalog = .failed(
+                            self.actionErrorMessage(error, device: device)
+                        )
+                    }
                     if let target = device.sshTarget, Self.isSSHAuthenticationFailure(error) {
                         self.sshAuthenticationRequest = SSHAuthenticationRequest(
                             deviceID: device.id,
@@ -929,8 +972,11 @@ final class AppModel: ObservableObject {
                 AgentAttachmentCapabilityRegistry(manifests: manifests)
             let advertised = manifests.map(\.agent)
             if device(deviceID)?.isLocal == true {
+                // Herdr supports OMP through its lifecycle extension, so it has
+                // no screen-detection manifest in server.agent_manifests.
                 let found = await service.installedAgents(
                     from: advertised,
+                    includingIntegrationKinds: ["omp"],
                     overrides: AgentBinaryOverrides.load()
                 )
                 sessions[deviceID]?.agentCatalog = .loaded(
@@ -1001,6 +1047,22 @@ final class AppModel: ObservableObject {
         setDeviceFilter(device.id)
     }
 
+    /// Adds a tailcat-tunnel device. The token is a bearer credential and goes
+    /// straight to the Keychain — devices.json never sees it.
+    func addTailcatDevice(name: String, token: String) {
+        let device = Device(name: name, kind: .tailcat)
+        do {
+            try TailcatCredentialStore.setToken(token, for: device.id)
+        } catch {
+            actionError = error.localizedDescription
+            return
+        }
+        devices.append(device)
+        store.save(devices)
+        startSession(device)
+        setDeviceFilter(device.id)
+    }
+
     func saveSSHPassword(_ password: String, for request: SSHAuthenticationRequest) {
         guard !password.isEmpty,
               let device = device(request.deviceID),
@@ -1060,8 +1122,10 @@ final class AppModel: ObservableObject {
     func removeDevice(_ device: Device) {
         guard !device.isLocal else { return }
         removeSSHPassword(for: device.id)
+        TailcatCredentialStore.removeToken(for: device.id)
         if sshAuthenticationRequest?.deviceID == device.id { sshAuthenticationRequest = nil }
         stopSession(device.id)
+        attachSessions.removeAll { $0.device.id == device.id }
         devices.removeAll { $0.id == device.id }
         store.save(devices)
         if deviceFilter == device.id { deviceFilter = nil }
@@ -1135,14 +1199,17 @@ final class AppModel: ObservableObject {
             )
             sessions[deviceID]?.agents = snapshot.agents
             sessions[deviceID]?.workspaces = snapshot.workspaces
-            sessions[deviceID]?.workspaces = snapshot.workspaces
-            sessions[deviceID]?.tabs = Self.orderedTabs(
+            sessions[deviceID]?.tabs = TabReorder.ordered(
                 snapshot.tabs ?? [],
                 workspaces: snapshot.workspaces
             )
             sessions[deviceID]?.panes = snapshot.ordinaryTerminalPanes
             let paneIDs = Set((snapshot.panes ?? []).map(\.paneID))
                 .union(snapshot.agents.map(\.paneID))
+            // Drop kept-alive attaches whose pane is gone (closed). A pane only taken
+            // over by another client still exists, so it stays — its Reconnect overlay
+            // needs the kept-alive child to rebuild the attach.
+            attachSessions.removeAll { $0.device.id == deviceID && !paneIDs.contains($0.ref.paneID) }
             if let selected = selectedPane, selected.deviceID == deviceID,
                !paneIDs.contains(selected.paneID) {
                 selectedPane = nil
@@ -1401,17 +1468,23 @@ final class AppModel: ObservableObject {
     }
 
     func renameAgent(_ entry: AgentEntry, name: String) {
+        renameTabLabel(device: entry.device, tabID: entry.agent.tabID, current: entry.title, name: name)
+    }
+
+    func renameTerminal(_ entry: TerminalEntry, name: String) {
+        guard let tabID = entry.tabID else { return }
+        renameTabLabel(device: entry.device, tabID: tabID, current: entry.title, name: name)
+    }
+
+    private func renameTabLabel(device: Device, tabID: String, current: String, name: String) {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != entry.title else { return }
+        guard !name.isEmpty, name != current else { return }
         Task {
             do {
-                try await service(for: entry.device).renameTab(
-                    tabID: entry.agent.tabID,
-                    label: name
-                )
-                await refresh(entry.device.id)
+                try await service(for: device).renameTab(tabID: tabID, label: name)
+                await refresh(device.id)
             } catch {
-                actionError = actionErrorMessage(error, device: entry.device)
+                actionError = actionErrorMessage(error, device: device)
             }
         }
     }
@@ -1429,11 +1502,13 @@ final class AppModel: ObservableObject {
         ) else { return }
 
         if let current = sessions[source.device.id]?.workspaces {
-            sessions[source.device.id]?.workspaces = WorkspaceReorder.applying(
-                current,
-                id: \.workspaceID,
-                plan: plan
-            )
+            withAnimation(.easeInOut(duration: 0.2)) {
+                sessions[source.device.id]?.workspaces = WorkspaceReorder.applying(
+                    current,
+                    id: \.workspaceID,
+                    plan: plan
+                )
+            }
         }
 
         Task {
@@ -1456,56 +1531,72 @@ final class AppModel: ObservableObject {
         guard source.device.id == target.device.id,
               source.agent.workspaceID == target.agent.workspaceID
         else { return }
-        let orderedIDs = orderedTabIDs(
-            deviceID: source.device.id,
-            workspaceID: source.agent.workspaceID
-        )
-        guard let insertIndex = TabReorder.insertIndex(
+        moveTab(
+            device: source.device,
+            workspaceID: source.agent.workspaceID,
             moving: source.agent.tabID,
             onto: target.agent.tabID,
+            placeAfter: placeAfter
+        )
+    }
+
+    /// Same `tab.move` path as agents. Cross-space / cross-device drops are ignored.
+    func moveTerminal(_ source: TerminalEntry, onto target: TerminalEntry, placeAfter: Bool) {
+        guard source.device.id == target.device.id,
+              source.pane.workspaceID == target.pane.workspaceID,
+              let moving = source.tabID,
+              let onto = target.tabID
+        else { return }
+        moveTab(
+            device: source.device,
+            workspaceID: source.pane.workspaceID,
+            moving: moving,
+            onto: onto,
+            placeAfter: placeAfter
+        )
+    }
+
+    private func moveTab(
+        device: Device,
+        workspaceID: String,
+        moving: String,
+        onto: String,
+        placeAfter: Bool
+    ) {
+        let orderedIDs = orderedTabIDs(deviceID: device.id, workspaceID: workspaceID)
+        guard let insertIndex = TabReorder.insertIndex(
+            moving: moving,
+            onto: onto,
             placeAfter: placeAfter,
             orderedIDs: orderedIDs
         ) else { return }
         guard let plan = WorkspaceReorder.plan(
-            moving: source.agent.tabID,
-            onto: target.agent.tabID,
+            moving: moving,
+            onto: onto,
             placeAfter: placeAfter,
             orderedIDs: orderedIDs
         ) else { return }
 
-        if let current = sessions[source.device.id]?.tabs {
-            let scoped = current.filter { $0.workspaceID == source.agent.workspaceID }
+        if let current = sessions[device.id]?.tabs {
+            let scoped = current.filter { $0.workspaceID == workspaceID }
             let reordered = WorkspaceReorder.applying(scoped, id: \.tabID, plan: plan)
-            sessions[source.device.id]?.tabs = Self.replacingTabs(
-                current,
-                workspaceID: source.agent.workspaceID,
-                with: reordered
-            )
+            withAnimation(.easeInOut(duration: 0.2)) {
+                sessions[device.id]?.tabs = Self.replacingTabs(
+                    current,
+                    workspaceID: workspaceID,
+                    with: reordered
+                )
+            }
         }
 
         Task {
             do {
-                try await service(for: source.device).moveTab(
-                    tabID: source.agent.tabID,
-                    insertIndex: insertIndex
-                )
-                await refresh(source.device.id)
+                try await service(for: device).moveTab(tabID: moving, insertIndex: insertIndex)
+                await refresh(device.id)
             } catch {
-                await refresh(source.device.id)
-                actionError = actionErrorMessage(error, device: source.device)
+                await refresh(device.id)
+                actionError = actionErrorMessage(error, device: device)
             }
-        }
-    }
-
-    private static func orderedTabs(_ tabs: [TabInfo], workspaces: [WorkspaceInfo]) -> [TabInfo] {
-        let wsIndex = Dictionary(uniqueKeysWithValues: workspaces.enumerated().map {
-            ($1.workspaceID, $0)
-        })
-        return tabs.sorted {
-            let w0 = wsIndex[$0.workspaceID] ?? Int.max
-            let w1 = wsIndex[$1.workspaceID] ?? Int.max
-            if w0 != w1 { return w0 < w1 }
-            return ($0.number ?? Int.max) < ($1.number ?? Int.max)
         }
     }
 

@@ -7,6 +7,11 @@ the Sparkle update description — a release without a section here fails CI.
 
 ## [Unreleased]
 
+### Changed
+- Integrate upstream through baca2c2 (libghostty, terminal keep-alive, sidebar
+  improvements and embedded Tailcat), while retaining tsnet, personal signing,
+  and disabled auto-updates. Include PR #79's mobile status changes too.
+
 ### Fixed
 - Subscribe to pane-scoped agent status events (upstream PR #79, Michael Liu),
   apply status immediately, and serialize/coalesce snapshot refreshes without
@@ -15,6 +20,110 @@ the Sparkle update description — a release without a section here fails CI.
   events on peer close, and wake cancelled readers without reusing their socket.
 - Reconcile snapshots every five seconds; tolerate a transient failure and
   reconnect after two consecutive failed checks. Discard work from old sessions.
+
+## [0.6.3] - 2026-09-10
+
+### Fixed
+- Terminal text — most visibly CJK — no longer renders pale/faint. The
+  keep-alive rework wrapped every attached terminal in `.opacity`, which
+  forces SwiftUI to composite it offscreen; there, glyph anti-aliasing on
+  Ghostty's non-opaque (clear) Metal layer fell back to a transparent
+  backdrop and came out thin and gray, worst on dense Chinese strokes. A
+  solid terminal-background backdrop inside the compositing group restores
+  full-contrast text, matching the pre-keep-alive rendering.
+
+## [0.6.2] - 2026-09-10
+
+### Changed
+- Switching between agents (and herdr terminals) now preserves each one's live
+  terminal instead of re-attaching it. Every pane you open stays mounted and
+  hidden, so switching back is instant and its scrollback and running state
+  survive the round trip — no takeover churn, no redraw. A pane's kept-alive
+  view is dropped when its pane actually closes. (thanks @lbr77 for the
+  reference implementation!)
+
+### Fixed
+- Mouse gestures in attached agent TUIs now have one owner from press through
+  release. Plain drags reach mouse-aware TUIs in full, while Shift-drag stays
+  in Ghostty for local selection. Command-C copies a local Ghostty selection
+  when present and otherwise reaches TUIs using the Kitty keyboard protocol,
+  instead of a replayed press producing an oversized selection or leaving the
+  TUI button logically held down. Herdr terminal panes follow the same rule:
+  the wheel keeps scrolling herdr's own scrollback and Shift-drag selects
+  locally, because `herdr … attach` has no server-side mouse selection — it
+  forwards button events to the pane program and drops them when that program
+  did not ask for the mouse.
+
+## [0.6.1] - 2026-09-10
+
+### Changed
+- The embedded terminal now renders with libghostty (Metal) instead of
+  SwiftTerm, on both the Mac app and the iOS/iPadOS client. Each pane is a
+  host-managed Ghostty surface: on the Mac a local `forkpty` byte pump feeds
+  it and carries keystrokes back to the PTY; on the phone the SSH PTY channel
+  feeds it. herdrm keeps its own light-mode color adaptation, ⌘-editing-key
+  readline chords, and agent-aware paste on top. Nerd Font glyphs, CJK, and
+  the light/dark themes are preserved. (thanks @lbr77 for the reference
+  implementation!)
+- Tailcat devices now use an embedded WireGuard/DERP client (a gomobile
+  build of tailcat, shared by macOS and iOS) instead of shelling out to the
+  `tailcat` CLI. No `brew install tailcat`, and tailcat devices work on the
+  iOS/iPadOS client too — where they carry herdr's control plane (spaces,
+  agents, prompting) but not a live terminal, which stays SSH-only. On the
+  Mac, terminal attach still rides the tunnel via the local herdr CLI. (the
+  embedded bridge is also @lbr77's work!)
+
+## [0.6.0] - 2026-09-10
+
+### Added
+- **Tailcat devices**: connect to a herdr behind NAT with no system VPN, no
+  Tailscale account, and no port forwarding. On the remote Mac, the
+  [herdr.tailcat](https://github.com/lbr77/herdr-plugin-tailcat) plugin
+  exposes the herdr socket through a WireGuard/DERP tunnel; in herdrm,
+  Add Device → Tailcat and paste the plugin's token (stored in the Keychain —
+  it is a bearer credential). Terminal attach rides the same tunnel via the
+  local herdr CLI (`HERDR_SOCKET_PATH`), so the CLI and remote server versions
+  must match. Requires `brew install tailcat` locally. Each operation pays a
+  tunnel handshake (~1–2 s); standalone shells and the Files workspace still
+  need SSH. (#68, thanks @hualinli for pushing the userspace-tunnel idea!)
+- Double-click a Space, Agent, or herdr Terminal in the sidebar to rename it
+  (same sheet as the context menu). Terminals now rename via `tab.rename`, and
+  a user-set tab label wins over the OSC title so the new name is visible.
+  (#71, thanks @rosuH!)
+- herdr Terminals in the sidebar can be drag-reordered. The drop calls the
+  same `tab.move` path as Agents; cross-space drops are ignored. Standalone
+  shells stay in creation order. Drag uses snapshot array order (the
+  `insert_index` herdr actually applies), not tab `number`. Rows slide into
+  place and the dragged row follows the pointer. (#72, thanks @rosuH!)
+
+### Fixed
+- The event subscription no longer drops every ~15 seconds on an idle
+  session: the subscribe acknowledgement's read timeout stayed on the socket
+  and killed the next blocking read, blinking the connection indicator
+  through endless reconnects. Events that arrived in the same read as the
+  acknowledgement are no longer discarded either. (#65, #66, thanks
+  @hualinli!)
+- After `tab.move`, a leftover numeric tab label (`"2"` on tab number 1)
+  is no longer treated as a display name, so Agents keep their real title.
+  (#72, thanks @rosuH!)
+- Sidebar Space, Agent, and Terminal rows expose a VoiceOver default action
+  so Activate selects the row (they are not SwiftUI `Button`s). (#71,
+  thanks @rosuH!)
+- Installed Oh My Pi (`omp`) now appears in the local New Agent picker even
+  though its hook-based lifecycle integration has no screen-detection manifest.
+  Settings → Agents also provides an Oh My Pi binary override. Install the
+  lifecycle extension with `herdr integration install omp` before starting OMP.
+  (#76, thanks @JackieJam!)
+- New Agent no longer spins on "Checking agents…" forever when the device
+  connection itself fails (herdr not installed, server not starting, protocol
+  too old): the panel now shows the connection error with a Retry button
+  instead of an endless spinner whose only hint was the footer indicator.
+  (#69)
+
+### Changed
+- herdrm is now licensed under PolyForm Noncommercial 1.0.0 (#67): free to
+  use, modify, and share for any noncommercial purpose; commercial use
+  requires a separate license.
 
 ## [0.5.3] - 2026-08-29
 

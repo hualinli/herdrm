@@ -52,6 +52,8 @@ public actor HerdrService {
         case .ssh, .tailscale:
             guard let tunnel else { throw HerdrError.tunnelFailed("missing tunnel") }
             socketPath = try await tunnel.ensureUp()
+        case .tailcat:
+            socketPath = try await TailcatBridgeManager.shared.ensureUp(deviceID: device.id)
         }
         let client = SocketRPC(socketPath: socketPath)
         let pong: PingResult
@@ -138,6 +140,7 @@ public actor HerdrService {
     public func disconnect() async {
         rpc = nil
         if let tunnel { await tunnel.tearDown() }
+        if device.isTailcat { await TailcatBridgeManager.shared.tearDown(deviceID: device.id) }
     }
 
     private func client() throws -> SocketRPC {
@@ -207,17 +210,24 @@ public actor HerdrService {
     /// callers omit it and share the process-wide capture.
     public func installedAgents(
         from kinds: [String],
+        includingIntegrationKinds integrationKinds: [String] = [],
         overrides: [String: String] = [:],
         snapshot: ShellEnvironment? = nil
     ) async -> [InstalledAgent] {
-        guard !kinds.isEmpty else { return [] }
+        // Hook-based agents may be startable without a screen-detection manifest.
+        // Still require a runnable local CLI, and preserve advertised ordering.
+        var candidates = kinds
+        for kind in integrationKinds where !candidates.contains(kind) {
+            candidates.append(kind)
+        }
+        guard !candidates.isEmpty else { return [] }
         let environment: ShellEnvironment
         if let snapshot {
             environment = snapshot
         } else {
             environment = await ShellEnvironment.ensure()
         }
-        return kinds.compactMap { kind in
+        return candidates.compactMap { kind in
             let query: String
             if let override = overrides[kind]?.trimmingCharacters(in: .whitespacesAndNewlines),
                !override.isEmpty {
@@ -247,6 +257,11 @@ public actor HerdrService {
         case .ssh, .tailscale:
             guard let tunnel else { throw HerdrError.tunnelFailed("missing tunnel") }
             return try await tunnel.probeRemoteHome()
+        case .tailcat:
+            // The tunnel carries only the herdr socket — no shell to probe.
+            throw HerdrError.fileOperationFailed(
+                "browsing the remote file system is not supported over a tailcat tunnel"
+            )
         }
     }
 
@@ -287,6 +302,10 @@ public actor HerdrService {
             names = output.split(separator: "\n").compactMap { line in
                 line.hasSuffix("/") ? String(line.dropLast()) : nil
             }
+        case .tailcat:
+            throw HerdrError.fileOperationFailed(
+                "browsing the remote file system is not supported over a tailcat tunnel"
+            )
         }
         return names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
@@ -558,6 +577,10 @@ public actor HerdrService {
                 throw HerdrError.fileTransferFailed("no SSH connection for this device")
             }
             return try await tunnel.uploadFile(from: localURL)
+        case .tailcat:
+            throw HerdrError.fileTransferFailed(
+                "file upload is not supported over a tailcat tunnel"
+            )
         }
     }
 
@@ -572,6 +595,15 @@ public actor HerdrService {
     /// The command for a standalone interactive shell on this device.
     public nonisolated func terminalCommand() -> TerminalCommand {
         switch device.kind {
+        case .tailcat:
+            // The tunnel carries only the herdr socket; there is no shell on
+            // the other side to run. Standalone terminals need SSH.
+            return TerminalCommand(
+                executable: "/bin/sh",
+                args: ["-c", "echo 'A tailcat device carries only the herdr socket — standalone shells need SSH.'; exit 1"],
+                environment: [:],
+                authorizationID: nil
+            )
         case .local:
             return TerminalCommand(
                 executable: "/bin/sh",
@@ -648,15 +680,24 @@ public actor HerdrService {
             attachArguments = "terminal attach \(Self.shellQuoted(terminalID)) --takeover"
         }
         switch device.kind {
-        case .local:
+        case .local, .tailcat:
             // Same PATH we used to discover `herdr`: login-shell snapshot, GUI
             // PATH, well-known prefixes. Discovery and attach must not diverge
             // or a `#!/usr/bin/env node` shim is found and then fails at exec.
             // TERM/COLUMNS/LINES stay with SwiftTerm.
+            //
+            // A tailcat device attaches with the LOCAL herdr CLI pointed at the
+            // tunnel's bridge socket (HERDR_SOCKET_PATH is herdr's contractual
+            // socket override), so the attach stream rides the same WireGuard
+            // tunnel as the RPCs — no shell on the far side is needed.
             var environment = (ShellEnvironment.cached ?? .empty).launchEnvironment(binary: nil)
             environment.removeValue(forKey: "TERM")
             environment.removeValue(forKey: "COLUMNS")
             environment.removeValue(forKey: "LINES")
+            if device.isTailcat {
+                environment["HERDR_SOCKET_PATH"] =
+                    TailcatBridgeManager.localSocketPath(deviceID: device.id)
+            }
             let script = "\(Self.attachBinarySelection(serverVersion: serverVersion)); "
                 + "exec \"$hb\" \(attachArguments)"
             return TerminalCommand(

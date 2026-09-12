@@ -56,6 +56,29 @@ final class EventStreamRecoveryTests: XCTestCase {
         await collector.value
     }
 
+    func testBreakingForResubscriptionClosesIdleReader() async throws {
+        let server = try EventTestServer()
+        let closed = expectation(description: "dropping the old stream closes its socket")
+        DispatchQueue.global().async {
+            defer { closed.fulfill() }
+            do {
+                let fd = try server.acceptClient()
+                defer { close(fd) }
+                _ = try SocketRPC.readLine(fd: fd, timeoutSeconds: 3)
+                try SocketRPC.writeLine(fd: fd, data: Data("{\"id\":\"events\",\"result\":{}}\n".utf8))
+                XCTAssertNil(try SocketRPC.readLine(fd: fd, timeoutSeconds: 3))
+            } catch { XCTFail("resubscription leaked its reader: \(error)") }
+        }
+        let consumer = Task {
+            let stream = SocketRPC(socketPath: server.path).events()
+            for try await event in stream {
+                if event.kind == HerdrEvent.subscriptionStartedKind { break }
+            }
+        }
+        try await consumer.value
+        await fulfillment(of: [closed], timeout: 4)
+    }
+
     func testMissingPaneFallsBackToLifecycleOnRealSocket() async throws {
         let server = try EventTestServer()
         let received = expectation(description: "lifecycle delivered after rejected pane")

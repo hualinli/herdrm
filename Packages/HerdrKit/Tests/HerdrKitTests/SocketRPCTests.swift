@@ -4,6 +4,23 @@ import XCTest
 @testable import HerdrKit
 
 final class SocketRPCTests: XCTestCase {
+    func testReadDeadlineExpiresWithoutChangingSocketTimeout() throws {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        defer { close(fds[0]); close(fds[1]) }
+        let began = Date()
+        XCTAssertThrowsError(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: 1))
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(began), 0.9)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 3)
+        var timeout = timeval()
+        var length = socklen_t(MemoryLayout<timeval>.size)
+        XCTAssertEqual(getsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &timeout, &length), 0)
+        XCTAssertEqual(timeout.tv_sec, 0)
+        var bytes = Array("after-timeout\n".utf8)
+        XCTAssertEqual(write(fds[1], &bytes, bytes.count), bytes.count)
+        XCTAssertEqual(try SocketRPC.readLine(fd: fds[0], timeoutSeconds: nil), Data("after-timeout".utf8))
+    }
+
     func testEventSubscriptionsIncludeScopedStatusPanesOnce() throws {
         let params = SocketRPC.eventSubscriptionParams(
             kinds: ["pane.updated"],
@@ -85,7 +102,7 @@ final class SocketRPCTests: XCTestCase {
         XCTAssertTrue(buffer.isEmpty)
     }
 
-    func testReadLineClearsARequestTimeoutForAnEventStream() throws {
+    func testReadLineTimeoutNeverPersistsOnTheEventSocket() throws {
         var fds: [Int32] = [0, 0]
         let result = fds.withUnsafeMutableBufferPointer { buffer in
             socketpair(AF_UNIX, SOCK_STREAM, 0, buffer.baseAddress!)
@@ -108,7 +125,7 @@ final class SocketRPCTests: XCTestCase {
             0,
             String(cString: strerror(errno))
         )
-        XCTAssertEqual(timeout.tv_sec, 1)
+        XCTAssertEqual(timeout.tv_sec, 0, "request deadlines must not change socket options")
 
         // Force the second readLine call to return from the existing buffer (no read()).
         buffer = Data("second\n".utf8)

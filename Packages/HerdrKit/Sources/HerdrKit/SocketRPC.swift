@@ -279,13 +279,11 @@ public struct SocketRPC: Sendable {
         func terminate() {
             lock.lock()
             terminated = true
-            let current = fd
-            fd = -1
+            // Wake the reader without releasing its descriptor number. Only
+            // the reader closes it, after leaving read/write/setsockopt. Closing
+            // here could let another connection reuse the fd underneath it.
+            if fd >= 0 { Darwin.shutdown(fd, SHUT_RDWR) }
             lock.unlock()
-            if current >= 0 {
-                Darwin.shutdown(current, SHUT_RDWR)
-                close(current)
-            }
         }
     }
 
@@ -296,18 +294,11 @@ public struct SocketRPC: Sendable {
     }
 
     static func readLine(fd: Int32, timeoutSeconds: Int32?, buffer: inout Data) throws -> Data? {
-        // SO_RCVTIMEO belongs to the file descriptor, not to an individual
-        // read, so it must be (re)applied on every call — including the
-        // buffer-only fast path below — or a timeout left by an earlier timed
-        // read would survive into a blocking (nil timeout) call. The event
-        // stream must block indefinitely, so a nil timeout restores the zero
-        // value; an idle stream failing with EAGAIN every 15s is a regression.
-        var tv = timeval(
-            tv_sec: timeoutSeconds.map { Int($0) } ?? 0,
-            tv_usec: 0
-        )
-        guard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size)) == 0 else {
-            throw HerdrError.connectionFailed("setsockopt(SO_RCVTIMEO): \(String(cString: strerror(errno)))")
+        // Readiness deadlines are local to this call. SO_RCVTIMEO persists on
+        // the socket, and changing it after the peer closed can fail even while
+        // complete events remain buffered. poll also wakes on shutdown at cancel.
+        let deadline = timeoutSeconds.map {
+            DispatchTime.now().uptimeNanoseconds + UInt64(max(0, $0)) * 1_000_000_000
         }
         if let index = buffer.firstIndex(of: 0x0A) {
             let line = buffer.prefix(upTo: index)
@@ -316,8 +307,30 @@ public struct SocketRPC: Sendable {
         }
         var chunk = [UInt8](repeating: 0, count: 65536)
         while true {
+            let milliseconds: Int32
+            if let deadline {
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline else {
+                    throw HerdrError.connectionFailed("read timed out")
+                }
+                milliseconds = Int32(min((deadline - now + 999_999) / 1_000_000, UInt64(Int32.max)))
+            } else {
+                milliseconds = -1
+            }
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = Darwin.poll(&descriptor, 1, milliseconds)
+            if ready == 0 { throw HerdrError.connectionFailed("read timed out") }
+            if ready < 0 {
+                if errno == EINTR { continue }
+                throw HerdrError.connectionFailed("poll(): \(String(cString: strerror(errno)))")
+            }
             let count = read(fd, &chunk, chunk.count)
-            if count == 0 { return buffer.isEmpty ? nil : buffer }
+            if count == 0 {
+                guard !buffer.isEmpty else { return nil }
+                let finalLine = buffer
+                buffer.removeAll()
+                return finalLine
+            }
             if count < 0 {
                 if errno == EINTR { continue }
                 throw HerdrError.connectionFailed("read(): \(String(cString: strerror(errno)))")

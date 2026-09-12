@@ -202,6 +202,7 @@ final class AppModel: ObservableObject {
     private let store = DeviceStore()
     private var services: [UUID: HerdrService] = [:]
     private var sessionTasks: [UUID: Task<Void, Never>] = [:]
+    private var sessionTokens: [UUID: UUID] = [:]
     private var refreshDebounces: [UUID: Task<Void, Never>] = [:]
     private var refreshDebounceTokens: [UUID: UUID] = [:]
     private var refreshDebouncePending: Set<UUID> = []
@@ -821,6 +822,9 @@ final class AppModel: ObservableObject {
     /// with exponential backoff (1s → 30s) whenever the connection drops.
     private func startSession(_ device: Device) {
         sessionTasks[device.id]?.cancel()
+        cancelRefreshes(device.id)
+        let sessionToken = UUID()
+        sessionTokens[device.id] = sessionToken
         if sessions[device.id] == nil { sessions[device.id] = DeviceSessionState() }
         let service = service(for: device)
         sessionTasks[device.id] = Task { [weak self] in
@@ -831,6 +835,7 @@ final class AppModel: ObservableObject {
                 self.sessions[device.id]?.latencyMilliseconds = nil
                 do {
                     let pong = try await service.connect()
+                    guard !Task.isCancelled, self.sessionTokens[device.id] == sessionToken else { return }
                     self.sessions[device.id]?.connection = .connected(version: pong.version)
                     if !device.isTailscale, let target = device.sshTarget {
                         self.sessions[device.id]?.latencyMilliseconds =
@@ -842,6 +847,16 @@ final class AppModel: ObservableObject {
                     if let current = self.device(device.id) {
                         self.probeOSIfNeeded(current)
                     }
+                    let recovery = Task { [weak self] in
+                        let healthy = await SnapshotRecovery.run { [weak self] in
+                            guard let self else { return true }
+                            return await self.refresh(device.id)
+                        }
+                        guard let self, !healthy, !Task.isCancelled,
+                              self.sessionTokens[device.id] == sessionToken else { return }
+                        self.startSession(device)
+                    }
+                    defer { recovery.cancel() }
                     await self.refresh(device.id)
                     await self.loadAgentCatalog(deviceID: device.id, using: service)
                     eventSubscriptions: while !Task.isCancelled {
@@ -850,7 +865,7 @@ final class AppModel: ObservableObject {
                         var needsResubscribe = false
                         var resubscribeDelay: UInt64 = 100_000_000
                         for try await event in stream {
-                            guard !Task.isCancelled else { return }
+                            guard !Task.isCancelled, self.sessionTokens[device.id] == sessionToken else { return }
                             if event.kind == HerdrEvent.agentStatusChangedKind {
                                 if self.applyAgentStatusEvent(event, deviceID: device.id) {
                                     self.scheduleRefresh(device.id)
@@ -885,6 +900,7 @@ final class AppModel: ObservableObject {
                         throw HerdrError.connectionFailed("event stream ended")
                     }
                 } catch {
+                    guard !Task.isCancelled, self.sessionTokens[device.id] == sessionToken else { return }
                     self.sessions[device.id]?.connection = .failed(error.localizedDescription)
                     if let target = device.sshTarget, Self.isSSHAuthenticationFailure(error) {
                         self.sshAuthenticationRequest = SSHAuthenticationRequest(
@@ -942,6 +958,8 @@ final class AppModel: ObservableObject {
         services.removeAll()
         sessionTasks.values.forEach { $0.cancel() }
         sessionTasks.removeAll()
+        for id in Array(sessionTokens.keys) { cancelRefreshes(id) }
+        sessionTokens.removeAll()
         tailscaleConnectTask?.cancel()
         tailscaleConnectTask = nil
         for service in live.values {
@@ -950,9 +968,7 @@ final class AppModel: ObservableObject {
         await tailscaleManager.stop()
     }
 
-    private func stopSession(_ id: UUID) {
-        sessionTasks[id]?.cancel()
-        sessionTasks[id] = nil
+    private func cancelRefreshes(_ id: UUID) {
         refreshDebounces[id]?.cancel()
         refreshDebounces[id] = nil
         refreshDebounceTokens[id] = nil
@@ -962,6 +978,13 @@ final class AppModel: ObservableObject {
         snapshotRefreshTokens[id] = nil
         refreshRequested.remove(id)
         statusGenerations[id] = nil
+    }
+
+    private func stopSession(_ id: UUID) {
+        sessionTasks[id]?.cancel()
+        sessionTasks[id] = nil
+        sessionTokens[id] = nil
+        cancelRefreshes(id)
         previousStatuses[id] = nil
         let service = services[id]
         services[id] = nil
@@ -1052,6 +1075,7 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func refresh(_ deviceID: UUID) async -> Bool {
+        guard !Task.isCancelled else { return false }
         refreshRequested.insert(deviceID)
         if let task = snapshotRefreshTasks[deviceID] {
             return await task.value
@@ -1079,9 +1103,11 @@ final class AppModel: ObservableObject {
             return false
         }
         let statusGeneration = statusGenerations[deviceID, default: 0]
+        let sessionToken = sessionTokens[deviceID]
         do {
             let snapshot = try await service.snapshot()
-            guard services[deviceID] === service, sessions[deviceID] != nil else {
+            guard !Task.isCancelled, sessionTokens[deviceID] == sessionToken,
+                  services[deviceID] === service, sessions[deviceID] != nil else {
                 return false
             }
             guard statusGenerations[deviceID, default: 0] == statusGeneration else {
@@ -1195,6 +1221,8 @@ final class AppModel: ObservableObject {
         else { return false }
 
         let status = AgentStatus(wire: statusRaw)
+        // Even a repeated status is newer evidence than an in-flight snapshot.
+        statusGenerations[deviceID, default: 0] &+= 1
         guard state.agents[index].status != status else { return true }
         let previous = previousStatuses[deviceID] ?? [:]
         state.agents[index] = state.agents[index].updatingStatus(status)
@@ -1214,7 +1242,6 @@ final class AppModel: ObservableObject {
         var nextStatuses = previous
         nextStatuses[paneID] = status
         previousStatuses[deviceID] = nextStatuses
-        statusGenerations[deviceID, default: 0] &+= 1
         sessions[deviceID] = state
         return true
     }

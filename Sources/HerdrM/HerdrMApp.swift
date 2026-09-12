@@ -671,8 +671,7 @@ struct TerminalSettingsView: View {
                         .tag(Double(NSFont.Weight.medium.rawValue))
                 }
                 .pickerStyle(.segmented)
-                .disabled(!fontName.isEmpty)
-                .help("Only the system monospaced font has selectable weights.")
+                .help("Available weights depend on the selected font.")
 
                 HStack {
                     Slider(value: $lineSpacing, in: 1.0...1.4, step: 0.05) {
@@ -687,7 +686,7 @@ struct TerminalSettingsView: View {
                 Toggle(isOn: $thinStrokes) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Thin strokes")
-                        Text("Turns off macOS font smoothing, which thickens glyph stems and makes agent output — Claude Code's bold text especially — look heavy and smudged.")
+                        Text("Turns off extra font thickening in the terminal.")
                             .font(.system(size: 10.5))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

@@ -11,8 +11,7 @@ enum TerminalDefaults {
     static let fontWeightKey = "terminal.fontWeight"
     static let lineSpacingKey = "terminal.lineSpacing"
     static let defaultFontSize: Double = 12.5
-    /// `NSFont.Weight` rawValue; 0 is `.regular`. Only the system monospaced font
-    /// has selectable weights — named families ship fixed faces and ignore this.
+    /// `NSFont.Weight` rawValue; 0 is `.regular`.
     static let defaultFontWeight: Double = 0
     static let defaultLineSpacing: Double = 1.0
     static let darkBackgroundHex = "#101012"
@@ -60,12 +59,40 @@ enum TerminalDefaults {
 
     static func font(name: String, size: Double, weight: Double = defaultFontWeight) -> NSFont {
         let base: NSFont
-        if !name.isEmpty, let custom = NSFont(name: name, size: size) {
-            base = custom
+        if !name.isEmpty {
+            let face = fontFaceName(forWeight: weight) ?? "Regular"
+            let member = NSFontManager.shared.availableMembers(ofFontFamily: name)?
+                .first { $0.count > 1 && ($0[1] as? String) == face }
+            let postScriptName = member?.first as? String
+            base = postScriptName.flatMap { NSFont(name: $0, size: size) }
+                ?? NSFontManager.shared.font(withFamily: name, traits: [], weight: 5, size: size)
+                ?? NSFont.monospacedSystemFont(ofSize: size, weight: NSFont.Weight(weight))
         } else {
             base = NSFont.monospacedSystemFont(ofSize: size, weight: NSFont.Weight(weight))
         }
         return withSymbolFallback(base, size: size)
+    }
+
+    static func fontFaceName(forWeight weight: Double) -> String? {
+        switch weight {
+        case ..<(-0.3): return "Light"
+        case ..<0.15: return nil
+        case ..<0.27: return "Medium"
+        case ..<0.35: return "Semibold"
+        case ..<0.5: return "Bold"
+        default: return "Heavy"
+        }
+    }
+
+    /// A patched Nerd Font already has prompt icons in its own proportions.
+    /// Mapping those codepoints to the bundled symbols font would enlarge them.
+    static func fontContainsNerdSymbols(_ family: String, size: Double) -> Bool {
+        guard !family.isEmpty,
+              let font = NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: size)
+        else { return false }
+        var codepoint: UniChar = 0xE718 // Starship's Node.js icon
+        var glyph: CGGlyph = 0
+        return CTFontGetGlyphsForCharacters(font as CTFont, &codepoint, &glyph, 1)
     }
 
     /// Nerd Font icons live in Unicode's Private Use Area, which CoreText's
@@ -103,9 +130,9 @@ enum GhosttyRuntime {
 
     /// Font settings are hot-applied; surfaces pick the change up without a
     /// rebuild, so this runs from every view update — the controller dedupes.
-    static func applyFontSettings(fontName: String, fontSize: Double, fontWeight: Double, lineSpacing: Double) {
+    static func applyFontSettings(fontName: String, fontSize: Double, fontWeight: Double, thinStrokes: Bool, lineSpacing: Double) {
         controller.setTerminalConfiguration(
-            fontConfiguration(fontName: fontName, fontSize: fontSize, fontWeight: fontWeight, lineSpacing: lineSpacing)
+            fontConfiguration(fontName: fontName, fontSize: fontSize, fontWeight: fontWeight, thinStrokes: thinStrokes, lineSpacing: lineSpacing)
         )
     }
 
@@ -113,16 +140,15 @@ enum GhosttyRuntime {
         fontName: String,
         fontSize: Double,
         fontWeight: Double,
+        thinStrokes: Bool,
         lineSpacing: Double
     ) -> TerminalConfiguration {
-        TerminalConfiguration { builder in
+        let needsSymbolFallback = !TerminalDefaults.fontContainsNerdSymbols(fontName, size: fontSize)
+        return TerminalConfiguration { builder in
             builder.withFontSize(Float(fontSize))
             builder.withCursorStyle(.block)
             builder.withCursorStyleBlink(true)
-            // The controller's base config is TerminalConfiguration.default,
-            // which enables font-thicken — counter it; fake bold at terminal
-            // sizes is what the "thin strokes" default exists to avoid.
-            builder.withFontThicken(false)
+            builder.withFontThicken(!thinStrokes)
             // Option-as-Meta: matches what the SwiftTerm embed did, and the
             // readline chords below (⌥⌫ → ESC DEL etc.) assume it.
             builder.withCustom("macos-option-as-alt", "true")
@@ -137,36 +163,24 @@ enum GhosttyRuntime {
                 builder.withFontFamily(fontName)
             } else {
                 builder.withFontFamily("SF Mono")
-                if let face = fontFaceName(forWeight: fontWeight) {
-                    // Weight selection only exists for the system font; named
-                    // families ship fixed faces and ignore the picker.
-                    builder.withCustom("font-style", face)
-                }
+            }
+            if let face = TerminalDefaults.fontFaceName(forWeight: fontWeight) {
+                builder.withCustom("font-style", face)
             }
             // Nerd Font icons live in Unicode's Private Use Area, which
             // CoreText's default cascade never resolves. A second font-family
             // entry would be Ghostty's fallback list, but Ghostty then derives
             // cell metrics from the symbols font (square advance == line height),
             // wrecking the grid — so the PUA ranges are codepoint-mapped instead.
-            builder.withCustom("font-codepoint-map", "U+E000-U+F8FF=\(TerminalDefaults.symbolFallbackFamily)")
-            builder.withCustom("font-codepoint-map", "U+F0000-U+FFFFD=\(TerminalDefaults.symbolFallbackFamily)")
-            builder.withCustom("font-codepoint-map", "U+100000-U+10FFFD=\(TerminalDefaults.symbolFallbackFamily)")
+            if needsSymbolFallback {
+                builder.withCustom("font-codepoint-map", "U+E000-U+F8FF=\(TerminalDefaults.symbolFallbackFamily)")
+                builder.withCustom("font-codepoint-map", "U+F0000-U+FFFFD=\(TerminalDefaults.symbolFallbackFamily)")
+                builder.withCustom("font-codepoint-map", "U+100000-U+10FFFD=\(TerminalDefaults.symbolFallbackFamily)")
+            }
             if lineSpacing != TerminalDefaults.defaultLineSpacing {
                 let percent = Int(((lineSpacing - 1.0) * 100).rounded())
                 builder.withCustom("adjust-cell-height", "\(percent)%")
             }
-        }
-    }
-
-    /// `NSFont.Weight` rawValue → SF Mono face name (Ghostty's `font-style`).
-    private static func fontFaceName(forWeight weight: Double) -> String? {
-        switch weight {
-        case ..<(-0.3): return "Light"
-        case ..<0.15: return nil
-        case ..<0.27: return "Medium"
-        case ..<0.35: return "Semibold"
-        case ..<0.5: return "Bold"
-        default: return "Heavy"
         }
     }
 
@@ -999,13 +1013,14 @@ struct AttachTerminalView: NSViewRepresentable {
 @MainActor
 func applyTerminalAppearance(
     _ view: LineBreakTerminalView,
-    fontName: String, fontSize: Double, thinStrokes _: Bool,
+    fontName: String, fontSize: Double, thinStrokes: Bool,
     fontWeight: Double, lineSpacing: Double, dark: Bool, mouseReporting: Bool
 ) {
     GhosttyRuntime.applyFontSettings(
         fontName: fontName,
         fontSize: fontSize,
         fontWeight: fontWeight,
+        thinStrokes: thinStrokes,
         lineSpacing: lineSpacing
     )
     view.mouseReportingEnabled = mouseReporting

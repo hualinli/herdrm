@@ -1249,6 +1249,12 @@ final class AppModel: ObservableObject {
                     return !terminalPaneIDs.contains(entry.ref.paneID)
                 }
             }
+            // A terminal↔agent transition keeps the same PaneRef, so assigning
+            // the refreshed snapshot does not fire selectedPane.didSet. The old
+            // typed attach was removed above; explicitly register the new typed
+            // entry now so the replacement view mounts without requiring the
+            // user to switch away and back.
+            noteSelectedAttachSession()
             if let selected = selectedPane, selected.deviceID == deviceID,
                !paneIDs.contains(selected.paneID) {
                 selectedPane = nil

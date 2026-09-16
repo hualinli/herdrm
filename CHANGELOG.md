@@ -24,7 +24,8 @@ the Sparkle update description — a release without a section here fails CI.
   reconnect after two consecutive failed checks. Discard work from old sessions.
 - Reconcile non-transport attach exits before showing a reconnect overlay,
   removing the exact stale attach when a pane closes or changes kind while
-  preserving immediate feedback for SSH failures and failed refreshes.
+  immediately mounting its terminal/agent replacement, and preserving feedback
+  for SSH failures and failed refreshes.
 
 ## [0.6.5] - 2026-09-13
 

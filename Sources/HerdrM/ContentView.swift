@@ -7,18 +7,50 @@ struct RootView: View {
     @ObservedObject var model: AppModel
     // Deliberately not persisted: the app always launches with the sidebar visible.
     @State private var sidebarCollapsed = false
+    @AppStorage("sidebar.width") private var sidebarWidth = 260.0
+    @State private var sidebarDragStartWidth: CGFloat?
 
     var body: some View {
+        GeometryReader { geometry in
+        let isCollapsed = sidebarCollapsed || geometry.size.width < 820
+        let visibleWidth = min(CGFloat(sidebarWidth), max(200, geometry.size.width - 620))
         ZStack(alignment: .bottomLeading) {
             HStack(spacing: 0) {
-                SidebarView(model: model, collapsed: $sidebarCollapsed)
-                    .frame(width: sidebarCollapsed ? 0 : 260, alignment: .trailing)
+                SidebarView(model: model, collapsed: $sidebarCollapsed, width: visibleWidth)
+                    .frame(width: isCollapsed ? 0 : visibleWidth, alignment: .trailing)
                     .clipped()
-                Rectangle()
-                    .fill(Theme.sidebarBorder)
-                    .frame(width: sidebarCollapsed ? 0 : 1)
-                    .ignoresSafeArea()
-                DetailView(model: model, sidebarCollapsed: $sidebarCollapsed)
+                if !isCollapsed {
+                    Rectangle()
+                        .fill(Theme.sidebarBorder)
+                        .frame(width: 1)
+                        .frame(width: 7)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 1)
+                                .onChanged { value in
+                                    let start = sidebarDragStartWidth ?? visibleWidth
+                                    if sidebarDragStartWidth == nil { sidebarDragStartWidth = start }
+                                    sidebarWidth = Double(min(520, max(200, start + value.translation.width)))
+                                }
+                                .onEnded { value in
+                                    let start = sidebarDragStartWidth ?? visibleWidth
+                                    sidebarDragStartWidth = nil
+                                    if start + value.translation.width < 190 {
+                                        sidebarCollapsed = true
+                                    }
+                                }
+                        )
+                        .onHover { hovering in
+                            (hovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
+                        }
+                }
+                DetailView(
+                    model: model,
+                    sidebarCollapsed: Binding(
+                        get: { isCollapsed },
+                        set: { sidebarCollapsed = $0 }
+                    )
+                )
             }
             .animation(.easeInOut(duration: 0.2), value: sidebarCollapsed)
 
@@ -38,6 +70,7 @@ struct RootView: View {
                     )
             }
         }
+        }
         .animation(.spring(response: 0.25, dampingFraction: 0.85), value: model.showDevicePanel)
         .background(
             Button("") { sidebarCollapsed.toggle() }
@@ -53,7 +86,7 @@ struct RootView: View {
         .focusedSceneValue(\.splitAxis, model.shellSplitAxis)
         .sheet(isPresented: $model.showSearch) { SearchSheet(model: model) }
         .ignoresSafeArea(.container, edges: .top)
-        .frame(minWidth: 980, minHeight: 620)
+        .frame(minWidth: 700, minHeight: 620)
         .onAppear { model.start() }
         .sheet(isPresented: $model.showAddDevice) { AddDeviceSheet(model: model) }
         .sheet(isPresented: $model.showNewAgent) { NewAgentSheet(model: model) }
@@ -630,7 +663,15 @@ struct DetailView: View {
                 mouseReporting: terminalMouseReporting,
                 onAttachmentError: { model.actionError = $0 },
                 onAttachmentUploadingChanged: { uploadingAttachment = $0 },
-                onExit: { code in endedAttach[session.id] = code }
+                onExit: { code in
+                    Task {
+                        await model.refresh(session.device.id)
+                        guard model.attachSessions.contains(where: { $0.id == session.id }) else {
+                            return
+                        }
+                        endedAttach[session.id] = code
+                    }
+                }
             )
                 // Keyed on the retry generation only — NOT colorScheme. A theme toggle
                 // must re-theme live via updateNSView (as the split shell already does);

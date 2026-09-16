@@ -11,6 +11,8 @@ the Sparkle update description — a release without a section here fails CI.
 - Integrate upstream through 93ae880 (libghostty, terminal keep-alive, sidebar
   improvements and embedded Tailcat), while retaining tsnet, personal signing,
   and disabled auto-updates. Include PR #79's mobile status changes too.
+- Make the sidebar width adjustable and persistent, automatically collapse it
+  in compact windows, and lower the minimum window width to 700 points.
 
 ### Fixed
 - Subscribe to pane-scoped agent status events (upstream PR #79, Michael Liu),
@@ -20,6 +22,8 @@ the Sparkle update description — a release without a section here fails CI.
   events on peer close, and wake cancelled readers without reusing their socket.
 - Reconcile snapshots every five seconds; tolerate a transient failure and
   reconnect after two consecutive failed checks. Discard work from old sessions.
+- Reconcile an attached terminal after its process exits before showing a
+  reconnect overlay, avoiding a false disconnect when the pane changed kind.
 
 ## [0.6.5] - 2026-09-13
 

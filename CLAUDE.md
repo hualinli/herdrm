@@ -65,7 +65,7 @@ release notes and the Sparkle update description, and fails if it's missing —
 add the section before tagging. The cask in OwO-Network/homebrew-brew is
 auto-bumped after each release.
 
-## herdr protocol notes (0.8.0, protocol 19; verified against the live socket)
+## herdr protocol notes (0.9.0, protocol 22; verified against the live socket)
 
 - Requests are NDJSON `{"id","method","params"}` on `~/.config/herdr/herdr.sock`;
   `params` must be present even when empty (`{}`), or the server rejects the request.

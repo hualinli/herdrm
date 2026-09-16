@@ -72,9 +72,15 @@ public struct Device: Codable, Sendable, Identifiable, Equatable, Hashable {
         return false
     }
 
+    /// A named herdr session surfaced as a Local device (issue #81): local, but
+    /// pointed at `~/.config/herdr/sessions/<name>/herdr.sock` via `socketPath`.
+    public var isNamedSession: Bool {
+        isLocal && socketPath != nil
+    }
+
     public var subtitle: String {
         switch kind {
-        case .local: return "This Mac · herdr.sock"
+        case .local: return isNamedSession ? "This Mac · session \(name)" : "This Mac · herdr.sock"
         case .ssh(let target): return "\(target) · SSH"
         case .tailscale(_, let hostname, _, let username):
             return "\(username)@\(hostname) · Tailscale"

@@ -697,6 +697,11 @@ public actor HerdrService {
             if device.isTailcat {
                 environment["HERDR_SOCKET_PATH"] =
                     TailcatBridgeManager.localSocketPath(deviceID: device.id)
+            } else if let socketPath = device.socketPath {
+                // A named-session Local device: point the local herdr CLI at
+                // that session's socket (herdr's contractual override), or the
+                // attach would run against the default session instead.
+                environment["HERDR_SOCKET_PATH"] = socketPath
             }
             let script = "\(Self.attachBinarySelection(serverVersion: serverVersion)); "
                 + "exec \"$hb\" \(attachArguments)"

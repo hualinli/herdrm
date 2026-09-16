@@ -666,16 +666,43 @@ final class AppModel: ObservableObject {
             startSession(device)
             probeOSIfNeeded(device)
         }
+        refreshNamedSessions()
     }
 
     func service(for device: Device) -> HerdrService {
         if let service = services[device.id] { return service }
         let service = HerdrService(
             device: device,
+            autoStartLocalServer: device.isLocal && device.socketPath == nil,
             tailscale: device.isTailscale ? tailscaleManager : nil
         )
         services[device.id] = service
         return service
+    }
+
+    /// Merges live named herdr sessions in as ephemeral Local devices.
+    /// They are discovered on launch/reconnect and are never persisted.
+    func refreshNamedSessions() {
+        let discovered = HerdrSessionDiscovery.namedSessions()
+            .map(HerdrSessionDiscovery.device(for:))
+        let discoveredIDs = Set(discovered.map(\.id))
+        let existingIDs = Set(devices.filter(\.isNamedSession).map(\.id))
+
+        for device in discovered where !existingIDs.contains(device.id) {
+            devices.append(device)
+            startSession(device)
+            probeOSIfNeeded(device)
+        }
+        for device in devices where device.isNamedSession && !discoveredIDs.contains(device.id) {
+            stopSession(device.id)
+            attachSessions.removeAll { $0.device.id == device.id }
+            devices.removeAll { $0.id == device.id }
+            if deviceFilter == device.id { deviceFilter = nil }
+            if selectedSpace?.deviceID == device.id { selectedSpace = nil }
+            if selectedPane?.deviceID == device.id {
+                selectedPane = preferredVisibleAgent()?.ref ?? firstVisiblePaneRef
+            }
+        }
     }
 
     /// Network latency in milliseconds for the device switcher and titlebar.
@@ -1096,6 +1123,7 @@ final class AppModel: ObservableObject {
             startSession(device)
             probeOSIfNeeded(device)
         }
+        refreshNamedSessions()
     }
 
     private func isFailed(_ deviceID: UUID) -> Bool {

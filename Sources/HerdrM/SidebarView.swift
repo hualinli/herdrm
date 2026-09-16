@@ -43,6 +43,7 @@ struct SidebarView: View {
             }
             .padding(.horizontal, 10)
             .frame(height: TitlebarMetrics.height)
+            .windowTitlebarInteraction()
 
             Spacer().frame(height: 8)
 
@@ -54,6 +55,11 @@ struct SidebarView: View {
                 // TERMINALS below; the ⌘D split beside an agent is separate.
                 actionRow(icon: "terminal", label: "New Terminal") {
                     model.showNewTerminal = true
+                }
+                // Also reachable from the folder.badge.plus by the Spaces
+                // header; promoted here alongside the other New … actions (#84).
+                actionRow(icon: "folder.badge.plus", label: "New Space") {
+                    model.showNewSpace = true
                 }
                 actionRow(icon: "folder", label: "Files") {
                     model.openFileManager()

@@ -8,7 +8,7 @@ the Sparkle update description — a release without a section here fails CI.
 ## [Unreleased]
 
 ### Changed
-- Integrate upstream through baca2c2 (libghostty, terminal keep-alive, sidebar
+- Integrate upstream through 93ae880 (libghostty, terminal keep-alive, sidebar
   improvements and embedded Tailcat), while retaining tsnet, personal signing,
   and disabled auto-updates. Include PR #79's mobile status changes too.
 
@@ -20,6 +20,28 @@ the Sparkle update description — a release without a section here fails CI.
   events on peer close, and wake cancelled readers without reusing their socket.
 - Reconcile snapshots every five seconds; tolerate a transient failure and
   reconnect after two consecutive failed checks. Discard work from old sessions.
+
+## [0.6.5] - 2026-09-13
+
+### Added
+- New Space is now a top-level sidebar action alongside New Agent and New
+  Terminal, while the Spaces header button remains as a secondary affordance.
+
+## [0.6.4] - 2026-09-13
+
+### Added
+- Live named sessions (`herdr --session <name>` / `HERDR_SESSION`) are discovered
+  as additional Local devices and use their own session socket.
+- The custom titlebar supports native window dragging and the system-configured
+  double-click action.
+
+### Fixed
+- HerdrSSH handshake code now compiles under Swift 6 region isolation.
+- Terminal copy works for local Ghostty selections and OSC 52 from agent TUIs.
+
+### Changed
+- Documented the mobile build and HerdrSSH test commands, and removed references
+  to acceptance-test scripts that are not part of this repository.
 
 ## [0.6.3] - 2026-09-10
 

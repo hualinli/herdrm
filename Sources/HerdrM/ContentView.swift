@@ -664,8 +664,22 @@ struct DetailView: View {
                 onAttachmentError: { model.actionError = $0 },
                 onAttachmentUploadingChanged: { uploadingAttachment = $0 },
                 onExit: { code in
+                    // SSH transport failure is already unambiguous; show it
+                    // immediately rather than delaying the overlay on an RPC
+                    // that is likely to fail for the same reason.
+                    if code == 255 {
+                        endedAttach[session.id] = code
+                        return
+                    }
                     Task {
-                        await model.refresh(session.device.id)
+                        guard await model.refresh(session.device.id) else {
+                            endedAttach[session.id] = code
+                            return
+                        }
+                        // A successful snapshot removes this exact kept-alive
+                        // entry if its pane closed or changed between terminal
+                        // and agent. A failed snapshot cannot disprove the exit,
+                        // so retain the original reconnect behavior.
                         guard model.attachSessions.contains(where: { $0.id == session.id }) else {
                             return
                         }

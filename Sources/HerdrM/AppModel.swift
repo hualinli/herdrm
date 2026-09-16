@@ -1234,10 +1234,21 @@ final class AppModel: ObservableObject {
             sessions[deviceID]?.panes = snapshot.ordinaryTerminalPanes
             let paneIDs = Set((snapshot.panes ?? []).map(\.paneID))
                 .union(snapshot.agents.map(\.paneID))
-            // Drop kept-alive attaches whose pane is gone (closed). A pane only taken
-            // over by another client still exists, so it stays — its Reconnect overlay
-            // needs the kept-alive child to rebuild the attach.
-            attachSessions.removeAll { $0.device.id == deviceID && !paneIDs.contains($0.ref.paneID) }
+            // Drop a kept-alive attach when its pane disappeared or changed kind.
+            // Agent and terminal entries deliberately have different ids for the
+            // same pane, so retaining by pane id alone leaves the dead old-kind
+            // child mounted after (for example) a shell starts an agent.
+            let agentPaneIDs = Set(snapshot.agents.map(\.paneID))
+            let terminalPaneIDs = Set(snapshot.ordinaryTerminalPanes.map(\.paneID))
+            attachSessions.removeAll { entry in
+                guard entry.device.id == deviceID else { return false }
+                switch entry {
+                case .agent:
+                    return !agentPaneIDs.contains(entry.ref.paneID)
+                case .terminal:
+                    return !terminalPaneIDs.contains(entry.ref.paneID)
+                }
+            }
             if let selected = selectedPane, selected.deviceID == deviceID,
                !paneIDs.contains(selected.paneID) {
                 selectedPane = nil
